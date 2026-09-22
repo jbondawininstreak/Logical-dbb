@@ -45,7 +45,7 @@ Where the brief left something open, we picked the simplest option. The choices 
 - A lead post skips a CSV column when its value is empty or only spaces, and prints columns in the CSV header order.
 - `/chats` lists chats in the order they were allowed. Re-allowing a chat moves it to the end.
 - `add_leads` returns the number of rows inserted and stores non-Latin text as-is, so it stays readable in the database.
-- CSV rows are tidied before saving: header names and values are trimmed, extra unnamed columns are dropped, and fully blank rows are skipped. A CSV with no lead rows gets a friendly message instead of `Loaded 0 leads`.
+- CSV rows are tidied before saving: header names and values are trimmed, values past the last header are kept as `Column N`, and fully blank rows are skipped. A CSV with no lead rows gets a friendly message instead of `Loaded 0 leads`.
 - CSV files are decoded as UTF-8 with any Excel byte-order mark removed, falling back to latin-1.
 - `/push <chat_id>` for a chat that is not allowed replies `Chat <id> is not allowed. Send /allow <id> first.` Missing or non-numeric arguments on `/allow`, `/revoke`, `/push` and `/release` get a one-line usage hint.
 - `/stats` lines are labelled `New`, `Posted`, `Claimed`, `No R`, `Hung up`, `On the phone`.

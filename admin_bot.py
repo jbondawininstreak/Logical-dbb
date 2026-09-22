@@ -131,9 +131,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         clean = {}
         for key, value in row.items():
             if key is None:
+                # Values past the last header: keep them as Column N.
+                base = len(reader.fieldnames or [])
+                for i, extra in enumerate(value or [], start=base + 1):
+                    extra = (extra or "").strip()
+                    if extra:
+                        clean[f"Column {i}"] = extra
                 continue
-            if isinstance(value, list):
-                value = ", ".join(v for v in value if v)
             clean[str(key).strip()] = (value or "").strip()
         if any(clean.values()):
             rows.append(clean)
