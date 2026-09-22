@@ -3,6 +3,7 @@
 import csv
 import io
 import logging
+import re
 
 from telegram import Bot, Update
 from telegram.ext import (
@@ -105,6 +106,101 @@ async def cmd_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(_format_chats(chats))
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_DATE_RE = re.compile(r"^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}")
+_PHONE_HEADER_WORDS = ("phone", "number", "mobile", "tel", "cell", "contact")
+
+
+def _digits_and_plus(value: str) -> str:
+    """Keep a leading + and digits only. Also unwraps Excel's 4.48E+11 form."""
+    value = value.strip()
+    if re.fullmatch(r"\d+(\.\d+)?[eE]\+?\d+", value):
+        try:
+            value = str(int(float(value)))
+        except (ValueError, OverflowError):
+            pass
+    plus = value.startswith("+")
+    digits = re.sub(r"\D", "", value)
+    return ("+" if plus else "") + digits
+
+
+def _looks_like_phone(value: str) -> bool:
+    if _DATE_RE.match(value.strip()) or _EMAIL_RE.match(value.strip()):
+        return False
+    d = _digits_and_plus(value)
+    return 8 <= len(d.lstrip("+")) <= 15 and d.lstrip("+").isdigit()
+
+
+def _normalize_phone(value: str) -> str:
+    """Return the number in international form with a leading +.
+
+    44xxxxxxxxxx -> +44xxxxxxxxxx, 0044... -> +44..., 07xxx -> +447xxx.
+    Anything else that already has + is kept; other shapes are left as digits.
+    """
+    d = _digits_and_plus(value)
+    if not d or not _looks_like_phone(d):
+        return value.strip()
+    if d.startswith("+"):
+        return d
+    if d.startswith("00"):
+        return "+" + d[2:]
+    if d.startswith("44"):
+        return "+" + d
+    if d.startswith("0") and len(d) in (10, 11):
+        return "+44" + d[1:]
+    return d
+
+
+def _first_row_is_header(cells: list[str]) -> bool:
+    """A row holding an email, a phone number or a date is data, not a header."""
+    for cell in cells:
+        cell = cell.strip()
+        if _EMAIL_RE.match(cell) or _DATE_RE.match(cell) or _looks_like_phone(cell):
+            return False
+    return True
+
+
+def _infer_headers(cells: list[str]) -> list[str]:
+    """Name columns from the shape of the first data row."""
+    names, seen = [], {}
+    for i, cell in enumerate(cells, start=1):
+        cell = cell.strip()
+        if _EMAIL_RE.match(cell):
+            name = "Email"
+        elif _looks_like_phone(cell):
+            name = "Phone"
+        elif _DATE_RE.match(cell):
+            name = "Date"
+        elif re.fullmatch(r"[A-Z]{2}", cell):
+            name = "Region"
+        else:
+            name = f"Column {i}"
+        seen[name] = seen.get(name, 0) + 1
+        names.append(name if seen[name] == 1 else f"{name} {seen[name]}")
+    return names
+
+
+def _clean_row(row: dict, fieldnames: list[str]) -> dict:
+    clean = {}
+    for key, value in row.items():
+        if key is None:
+            # Values past the last header: keep them as Column N.
+            for i, extra in enumerate(value or [], start=len(fieldnames) + 1):
+                extra = (extra or "").strip()
+                if extra:
+                    clean[f"Column {i}"] = extra
+            continue
+        key = str(key).strip()
+        value = (value or "").strip()
+        if value and _looks_like_phone(value) and (
+            any(w in key.lower() for w in _PHONE_HEADER_WORDS) or key.startswith("Phone")
+            or not any(ch.isalpha() for ch in value)
+        ):
+            value = _normalize_phone(value)
+        clean[key] = value
+    return clean
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _authorized(update):
         return
@@ -125,22 +221,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except UnicodeDecodeError:
         text = raw.decode("latin-1")
 
-    reader = csv.DictReader(io.StringIO(text))
-    rows = []
-    for row in reader:
-        clean = {}
-        for key, value in row.items():
-            if key is None:
-                # Values past the last header: keep them as Column N.
-                base = len(reader.fieldnames or [])
-                for i, extra in enumerate(value or [], start=base + 1):
-                    extra = (extra or "").strip()
-                    if extra:
-                        clean[f"Column {i}"] = extra
-                continue
-            clean[str(key).strip()] = (value or "").strip()
-        if any(clean.values()):
-            rows.append(clean)
+    first = next(csv.reader(io.StringIO(text)), None)
+    if first is None:
+        rows = []
+    elif _first_row_is_header(first):
+        reader = csv.DictReader(io.StringIO(text))
+        fieldnames = list(reader.fieldnames or [])
+        rows = [_clean_row(r, fieldnames) for r in reader]
+    else:
+        # No header row: name the columns from the data and keep the first row.
+        fieldnames = _infer_headers(first)
+        reader = csv.DictReader(io.StringIO(text), fieldnames=fieldnames)
+        rows = [_clean_row(r, fieldnames) for r in reader]
+    rows = [r for r in rows if any(r.values())]
 
     if not rows:
         await message.reply_text(

@@ -54,3 +54,5 @@ Where the brief left something open, we picked the simplest option. The choices 
 - If a claim fails and the lead has no recorded owner name (for example it was just released), the alert says `Already claimed by someone else`.
 - Malformed button data (a non-numeric lead ID or a bad key) is answered silently and ignored.
 - The environment used to build this had `python-telegram-bot` 22.8 installed, which is within the `>=21.0` requirement.
+- If the first CSV row holds an email, a phone number or a date, the file is treated as having no header row: that row is kept as a lead and the columns are named Email, Phone, Region, Date or `Column N` from their contents.
+- Phone numbers (a column named phone, number, mobile, tel, cell or contact, or any all-digit value of 8 to 15 digits) are stored in international form: `44…` and `0044…` become `+44…`, a UK `0…` number becomes `+44…`, and Excel's `4.48E+11` form is unwrapped. Numbers with a `+` already are kept as they are.
