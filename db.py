@@ -22,6 +22,13 @@ load_dotenv()
 TURSO_DATABASE_URL = os.environ["TURSO_DATABASE_URL"]
 TURSO_AUTH_TOKEN = os.environ["TURSO_AUTH_TOKEN"]
 
+# Turso shows the database URL as libsql://..., but libsql-client turns that
+# scheme into a hrana WebSocket connection, and Turso's edge answers the wss
+# handshake with HTTP 400. The https:// form of the same host speaks the HTTP
+# API and works, so accept whichever one is pasted into .env and send that.
+if TURSO_DATABASE_URL.startswith("libsql://"):
+    TURSO_DATABASE_URL = "https://" + TURSO_DATABASE_URL[len("libsql://"):]
+
 OUTCOME_KEYS = ("no_response", "hung_up", "on_phone")
 
 _SCHEMA = [

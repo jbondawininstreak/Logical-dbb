@@ -6,7 +6,7 @@ Two Telegram bots and a web dashboard, sharing one database hosted on Turso (a f
 
 1. **Make two bots.** In Telegram, open **@BotFather** and send `/newbot`. Follow the prompts and copy the token it gives you. Do it a second time for the second bot. Name them something like `MyAdminBot` and `MyCRMBot`. Keep both tokens.
 2. **Get your user ID.** Open **@userinfobot** in Telegram and send it anything. It replies with your ID, a number.
-3. **Make a Turso database.** Go to turso.tech, sign up (free, no card), click *Create database*, name it `crm`. On the database page copy the **URL** (starts with `libsql://`) and click *Generate token*; copy that too.
+3. **Make a Turso database.** Go to turso.tech, sign up (free, no card), click *Create database*, name it `crm`. On the database page copy the **URL** (shown as `libsql://...`) and click *Generate token*; copy that too. Paste the URL as-is; the app swaps the `libsql://` scheme for `https://`, which is the transport Turso actually accepts.
 4. **Fill in `.env`.** Copy `.env.example` to `.env`: `ADMIN_BOT_TOKEN`, `CRM_BOT_TOKEN`, `ADMIN_USER_ID`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DASHBOARD_KEY` (any long random word you make up).
 5. **Run it.** `pip install -r requirements.txt` then `python run.py`. Open `http://localhost:8000/?key=<your DASHBOARD_KEY>` in a browser.
 6. **Connect the group.** Add the CRM bot to the callers' group; it posts the chat ID. On the dashboard's *Chats* page, add that ID.
