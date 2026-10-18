@@ -364,13 +364,10 @@ def redirect(path: str, key: str) -> RedirectResponse:
 async def home(key: str = Depends(require_key)):
     counts = db.stats()
     chats = db.list_chats()
-    sources = db.list_sources()
-    pending_flags = len([f for f in db.list_flags() if not f.get("confirmed")])
-    badges = {
-        "/flags": pending_flags,
-        "/chats": len(chats),
-        "/sources": len(sources),
-    }
+    # A red badge is "something is waiting for you", so only flags pending review
+    # get one. Chat and source counts are facts, not alerts, and belong in the
+    # cards below rather than on a tile.
+    badges = {"/flags": len([f for f in db.list_flags() if not f.get("confirmed")])}
     tiles = "".join(
         tile(path, label, name, c1, c2, key, badges.get(path, 0))
         for path, label, name, c1, c2 in TILES
