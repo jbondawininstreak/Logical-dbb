@@ -13,6 +13,28 @@ Two Telegram bots and a web dashboard, sharing one database hosted on Turso (a f
 7. **Upload leads.** Dashboard *Upload*: pick the CSV, type a source name (for example `list-oct-18`), submit. Then click *Push*.
 8. **Work the leads.** Callers tap *I'm calling it*, then *Answered* when a human picks up, then the outcome. Calls over 5 minutes ask for notes. *Do not even try* hides a number; confirm or unflag it on the *Flags* page.
 
+## Hosting on a server
+
+The steps above run everything on your own computer, which has to stay on. To run it on a small server instead, so it works day and night and the dashboard has a proper web address:
+
+1. **Get a server.** Any provider works (Hetzner, DigitalOcean, Vultr, and so on). Pick Ubuntu 24.04 and the smallest size. Write down its public IP address.
+2. **Run the setup script.** Log in to the server as root and run one line, using your own domain name:
+   ```
+   curl -fsSL https://raw.githubusercontent.com/jbondawininstreak/Logical-dbb/main/deploy/setup.sh | bash -s -- crm.yourdomain.com
+   ```
+   It installs Python and Caddy, puts the code in `/opt/crm`, creates a service that starts on boot, and opens only ports 22, 80 and 443.
+3. **Fill in the config.** `nano /opt/crm/.env` and paste in the same six values as step 4 above. Then `systemctl start crm`.
+4. **Point the domain at it.** In cloaked.gg, open the DNS page for your domain and add an **A record**: name `crm` (or `@` for the bare domain), value the server's IP, with the proxy turned on. Give it a minute.
+5. **Open the dashboard.** `https://crm.yourdomain.com/?key=<your DASHBOARD_KEY>`. Caddy fetches the HTTPS certificate on the first visit.
+
+Useful afterwards:
+
+- Logs: `journalctl -u crm -f`
+- Update to the latest code: run the same setup line again, or `cd /opt/crm && git pull && .venv/bin/pip install -r requirements.txt && systemctl restart crm`
+- Restart: `systemctl restart crm`
+
+Keep it private. The key is in every dashboard link, so do not share links or screenshots of the address bar. cloaked.gg's firewall sits in front, and the dashboard itself only listens on the server's own loopback address, so the only way in is through Caddy on your domain. If cloaked.gg publishes the IP ranges its proxy uses, you can tighten things further by letting ports 80 and 443 through `ufw` only from those ranges, so nobody can reach the server by its bare IP.
+
 ## Dashboard pages
 
 Every page needs `?key=<your DASHBOARD_KEY>` on the end of the address, or it answers 403. Bookmark `http://localhost:8000/?key=...` once and use the links on the page.
@@ -90,3 +112,6 @@ Where the brief left something open, we picked the simplest option. The choices 
 - A tap on a card that is already closed answers `Already closed`; a claim on a blocked number answers `This number is blocked`.
 - Dashboard answer rate and average talk show `-` when there are no attempts; a non-numeric chat ID on Push or Chats returns a 400 or an inline error.
 - The hosted-database client is re-created after `run.py` forks its three processes and closed on exit, because the libsql client's background thread otherwise stops a process from exiting.
+- The dashboard listens on `127.0.0.1:8000` unless `DASHBOARD_HOST` or `DASHBOARD_PORT` says otherwise, so on a server it is reachable only through Caddy.
+- Caddy is the web server in front of the dashboard because it obtains and renews the HTTPS certificate on its own with no extra steps.
+- The systemd service runs the two bots and the dashboard together as one unit, because `run.py` already starts all three; a crash restarts all of them after five seconds.
