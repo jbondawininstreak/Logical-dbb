@@ -1,2 +1,6 @@
 python-telegram-bot>=21.0
 python-dotenv>=1.0
+libsql-client>=0.3
+fastapi
+uvicorn
+python-multipart
