@@ -1,7 +1,5 @@
 """Admin bot: talks to exactly one person (ADMIN_USER_ID) and ignores everyone else."""
 
-import csv
-import io
 import logging
 import re
 
@@ -29,7 +27,7 @@ HELP_TEXT = "\n".join(
         "/allow <chat_id> [title] - let the CRM bot work in that group chat",
         "/revoke <chat_id> - stop the CRM bot working in that group chat",
         "/chats - show the allowed group chats",
-        "Send me a .csv file - load its rows as new leads (first row is the headers)",
+        "Send me a .csv file - load its rows as new leads (first row is the headers; the file name is the source)",
         "/push [chat_id] - post the next new lead to a group chat",
         "/release <lead_id> - un-claim a lead so someone else can take it",
         "/stats - show how many leads are new, posted, claimed and each outcome",
@@ -106,101 +104,6 @@ async def cmd_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(_format_chats(chats))
 
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_DATE_RE = re.compile(r"^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}")
-_PHONE_HEADER_WORDS = ("phone", "number", "mobile", "tel", "cell", "contact")
-
-
-def _digits_and_plus(value: str) -> str:
-    """Keep a leading + and digits only. Also unwraps Excel's 4.48E+11 form."""
-    value = value.strip()
-    if re.fullmatch(r"\d+(\.\d+)?[eE]\+?\d+", value):
-        try:
-            value = str(int(float(value)))
-        except (ValueError, OverflowError):
-            pass
-    plus = value.startswith("+")
-    digits = re.sub(r"\D", "", value)
-    return ("+" if plus else "") + digits
-
-
-def _looks_like_phone(value: str) -> bool:
-    if _DATE_RE.match(value.strip()) or _EMAIL_RE.match(value.strip()):
-        return False
-    d = _digits_and_plus(value)
-    return 8 <= len(d.lstrip("+")) <= 15 and d.lstrip("+").isdigit()
-
-
-def _normalize_phone(value: str) -> str:
-    """Return the number in international form with a leading +.
-
-    44xxxxxxxxxx -> +44xxxxxxxxxx, 0044... -> +44..., 07xxx -> +447xxx.
-    Anything else that already has + is kept; other shapes are left as digits.
-    """
-    d = _digits_and_plus(value)
-    if not d or not _looks_like_phone(d):
-        return value.strip()
-    if d.startswith("+"):
-        return d
-    if d.startswith("00"):
-        return "+" + d[2:]
-    if d.startswith("44"):
-        return "+" + d
-    if d.startswith("0") and len(d) in (10, 11):
-        return "+44" + d[1:]
-    return d
-
-
-def _first_row_is_header(cells: list[str]) -> bool:
-    """A row holding an email, a phone number or a date is data, not a header."""
-    for cell in cells:
-        cell = cell.strip()
-        if _EMAIL_RE.match(cell) or _DATE_RE.match(cell) or _looks_like_phone(cell):
-            return False
-    return True
-
-
-def _infer_headers(cells: list[str]) -> list[str]:
-    """Name columns from the shape of the first data row."""
-    names, seen = [], {}
-    for i, cell in enumerate(cells, start=1):
-        cell = cell.strip()
-        if _EMAIL_RE.match(cell):
-            name = "Email"
-        elif _looks_like_phone(cell):
-            name = "Phone"
-        elif _DATE_RE.match(cell):
-            name = "Date"
-        elif re.fullmatch(r"[A-Z]{2}", cell):
-            name = "Region"
-        else:
-            name = f"Column {i}"
-        seen[name] = seen.get(name, 0) + 1
-        names.append(name if seen[name] == 1 else f"{name} {seen[name]}")
-    return names
-
-
-def _clean_row(row: dict, fieldnames: list[str]) -> dict:
-    clean = {}
-    for key, value in row.items():
-        if key is None:
-            # Values past the last header: keep them as Column N.
-            for i, extra in enumerate(value or [], start=len(fieldnames) + 1):
-                extra = (extra or "").strip()
-                if extra:
-                    clean[f"Column {i}"] = extra
-            continue
-        key = str(key).strip()
-        value = (value or "").strip()
-        if value and _looks_like_phone(value) and (
-            any(w in key.lower() for w in _PHONE_HEADER_WORDS) or key.startswith("Phone")
-            or not any(ch.isalpha() for ch in value)
-        ):
-            value = _normalize_phone(value)
-        clean[key] = value
-    return clean
-
-
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _authorized(update):
         return
@@ -221,19 +124,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except UnicodeDecodeError:
         text = raw.decode("latin-1")
 
-    first = next(csv.reader(io.StringIO(text)), None)
-    if first is None:
-        rows = []
-    elif _first_row_is_header(first):
-        reader = csv.DictReader(io.StringIO(text))
-        fieldnames = list(reader.fieldnames or [])
-        rows = [_clean_row(r, fieldnames) for r in reader]
-    else:
-        # No header row: name the columns from the data and keep the first row.
-        fieldnames = _infer_headers(first)
-        reader = csv.DictReader(io.StringIO(text), fieldnames=fieldnames)
-        rows = [_clean_row(r, fieldnames) for r in reader]
-    rows = [r for r in rows if any(r.values())]
+    rows = common.parse_csv(text)
 
     if not rows:
         await message.reply_text(
@@ -242,8 +133,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    n = db.add_leads(rows)
-    await message.reply_text(f"Loaded {n} leads. Send /push to post the first one.")
+    source_name = re.sub(r"\.csv$", "", document.file_name or "", flags=re.IGNORECASE).strip()
+    if not source_name:
+        source_name = "admin-upload"
+    try:
+        result = db.add_leads(rows, source_name=source_name, phone_column="")
+    except ValueError as exc:
+        await message.reply_text(str(exc))
+        return
+    await message.reply_text(
+        f"Loaded {result['added']} leads ({result['skipped_blocked']} skipped as do-not-call). "
+        "Send /push to post the first one."
+    )
 
 
 async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -309,7 +210,7 @@ async def cmd_release(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 chat_id=lead["chat_id"],
                 message_id=lead["message_id"],
                 text=common.format_lead(lead),
-                reply_markup=common.claim_keyboard(lead_id),
+                reply_markup=common.posted_keyboard(lead_id),
             )
         except Exception as exc:  # editing is best effort
             log.warning("Could not edit message for lead %s: %s", lead_id, exc)
@@ -325,6 +226,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"New: {s.get('new', 0)}",
         f"Posted: {s.get('posted', 0)}",
         f"Claimed: {s.get('claimed', 0)}",
+        f"Closed: {s.get('closed', 0)}",
+        f"Blocked: {s.get('blocked', 0)}",
         f"No R: {s.get('no_response', 0)}",
         f"Hung up: {s.get('hung_up', 0)}",
         f"On the phone: {s.get('on_phone', 0)}",
