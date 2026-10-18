@@ -35,6 +35,30 @@ Useful afterwards:
 
 Keep it private. The key is in every dashboard link, so do not share links or screenshots of the address bar. cloaked.gg's firewall sits in front, and the dashboard itself only listens on the server's own loopback address, so the only way in is through Caddy on your domain. If cloaked.gg publishes the IP ranges its proxy uses, you can tighten things further by letting ports 80 and 443 through `ufw` only from those ranges, so nobody can reach the server by its bare IP.
 
+## Tests
+
+```
+pip install -r requirements-dev.txt
+python -m pytest tests
+```
+
+They run against a throwaway SQLite file, never a hosted database: `tests/conftest.py`
+sets `TURSO_DATABASE_URL` before anything imports `db`, and refuses to run if it is
+not a `file:` URL. The sample files in every supported format are built during the
+run rather than committed.
+
+What they are there to hold still:
+
+- Every format lands on the same list of row dicts, and parsing leaves phone values
+  exactly as written.
+- A number is only turned into E.164 against a chosen country, and a number that
+  country cannot explain is rejected rather than guessed at.
+- A lead key is digits only, so the same number matches its own earlier uploads,
+  flags and call history whatever shape it arrived in.
+- A preview writes nothing, and the button that turns it into leads cannot be
+  pressed twice.
+- A dashboard link never loses its key.
+
 ## Dashboard pages
 
 Every page needs `?key=<your DASHBOARD_KEY>` on the end of the address, or it answers 403. Bookmark `http://localhost:8000/?key=...` once and use the links on the page.
