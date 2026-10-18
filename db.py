@@ -152,8 +152,33 @@ def _lead(row: dict | None) -> dict | None:
     return row
 
 
+# Columns added after v2 shipped. SQLite has no "ADD COLUMN IF NOT EXISTS", and
+# init_db runs at import in each of run.py's three processes, so the existing
+# columns are read first and a lost race is swallowed.
+_ADDED_COLUMNS = {
+    "sources": (
+        ("country", "TEXT DEFAULT ''"),
+        ("timezone", "TEXT DEFAULT ''"),
+    ),
+}
+
+
+def _add_missing_columns() -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        have = {str(r.get("name")) for r in _rows(_q(f"PRAGMA table_info({table})"))}
+        for name, decl in columns:
+            if name in have:
+                continue
+            try:
+                _q(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+            except Exception as exc:  # another process added it first
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
+
 def init_db() -> None:
     _c().batch(_SCHEMA)
+    _add_missing_columns()
 
 
 def normalize_phone(raw: str) -> str:
@@ -189,16 +214,22 @@ def is_allowed(chat_id: int) -> bool:
 # --- sources ------------------------------------------------------------------
 
 
-def get_or_create_source(name: str) -> int:
+def get_or_create_source(name: str, country: str = "", timezone: str = "") -> int:
     name = (name or "").strip() or "unknown"
     _q("INSERT OR IGNORE INTO sources (name) VALUES (?)", (name,))
+    if country or timezone:
+        # Re-uploading under the same source name updates what it was read as.
+        _q(
+            "UPDATE sources SET country=?, timezone=? WHERE name=?",
+            ((country or "").upper(), timezone or "", name),
+        )
     row = _one(_q("SELECT id FROM sources WHERE name=?", (name,)))
     return int(row["id"])
 
 
 def list_sources() -> list[dict]:
     rs = _q(
-        "SELECT s.id, s.name, s.created_at, "
+        "SELECT s.id, s.name, s.created_at, s.country, s.timezone, "
         "(SELECT COUNT(*) FROM leads l WHERE l.source_id = s.id) AS leads "
         "FROM sources s ORDER BY s.name"
     )
@@ -208,7 +239,24 @@ def list_sources() -> list[dict]:
 # --- leads --------------------------------------------------------------------
 
 
-def _pick_phone_column(rows: list[dict], phone_column: str) -> str:
+# What a phone column can be called. common.py reads this from here so there is
+# one list rather than one per layer.
+PHONE_HEADER_WORDS = ("phone", "number", "mobile", "tel", "cell", "contact")
+
+_DIGITS = re.compile(r"\D")
+
+
+def _digit_count(value) -> int:
+    return len(_DIGITS.sub("", str(value or "")))
+
+
+def pick_phone_column(rows: list[dict], phone_column: str) -> str:
+    """Which column holds the phone number.
+
+    The name given on the form wins, then any header that reads like a phone
+    column, then the column whose values actually look like phone numbers, for a
+    file whose headers say nothing useful.
+    """
     headers: list[str] = []
     for row in rows:
         for key in row.keys():
@@ -225,11 +273,20 @@ def _pick_phone_column(rows: list[dict], phone_column: str) -> str:
             f"Phone column '{wanted}' not found. Columns are: {', '.join(headers)}"
         )
     for h in headers:
-        if "phone" in h.lower():
+        if any(word in h.lower() for word in PHONE_HEADER_WORDS):
             return h
+    # Nothing in the headers: count the values that could be dialled.
+    best, best_hits = "", 0
+    for h in headers:
+        hits = sum(1 for row in rows if 8 <= _digit_count(row.get(h)) <= 15)
+        if hits > best_hits:
+            best, best_hits = h, hits
+    if best and best_hits * 2 >= len(rows):
+        return best
     raise ValueError(
         "No phone column found. Name one in the upload, or use a header that "
-        f"contains 'phone'. Columns are: {', '.join(headers)}"
+        f"says what it holds ({', '.join(PHONE_HEADER_WORDS)}). "
+        f"Columns are: {', '.join(headers)}"
     )
 
 
@@ -244,7 +301,7 @@ def add_leads(rows: list[dict], source_name: str, phone_column: str) -> dict:
     rows = [dict(r) for r in rows if r]
     if not rows:
         return result
-    column = _pick_phone_column(rows, phone_column)
+    column = pick_phone_column(rows, phone_column)
     source_id = get_or_create_source(source_name)
     blocked = {r["phone"] for r in _rows(_q("SELECT phone FROM do_not_even_try"))}
 
@@ -266,6 +323,46 @@ def add_leads(rows: list[dict], source_name: str, phone_column: str) -> dict:
         _c().batch(statements[i : i + 200])
     result["added"] = len(statements)
     return result
+
+
+def blocked_phones() -> set[str]:
+    """Every do-not-even-try number, as lead keys, for checks before an upload."""
+    return {r["phone"] for r in _rows(_q("SELECT phone FROM do_not_even_try"))}
+
+
+def add_validated_leads(
+    results: list[dict], source_name: str, country: str = "", timezone: str = ""
+) -> dict:
+    """Write the rows common.validate_rows marked valid; skip and count the rest.
+
+    The stored key stays digits only, so a row uploaded as +61432841955 is keyed
+    as 61432841955 and still matches the leads, flags and call history of the
+    same number from an earlier upload in any other shape. Returns
+    {"added": n, "skipped": {status: n}}.
+    """
+    skipped = {}
+    for r in results:
+        status = r.get("status")
+        if status != "valid":
+            skipped[status] = skipped.get(status, 0) + 1
+    valid = [r for r in results if r.get("status") == "valid"]
+    if not valid:
+        return {"added": 0, "skipped": skipped}
+    source_id = get_or_create_source(source_name, country, timezone)
+    statements = []
+    for r in valid:
+        key = r.get("key") or normalize_phone(r.get("phone") or "")
+        if not key:
+            continue
+        statements.append(
+            libsql_client.Statement(
+                "INSERT INTO leads (phone, data, source_id, status) VALUES (?, ?, ?, 'new')",
+                [key, json.dumps(r.get("row") or {}, ensure_ascii=False), source_id],
+            )
+        )
+    for i in range(0, len(statements), 200):
+        _c().batch(statements[i : i + 200])
+    return {"added": len(statements), "skipped": skipped}
 
 
 def next_new_lead() -> dict | None:
