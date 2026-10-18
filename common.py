@@ -37,7 +37,7 @@ OUTCOMES = {  # callback key -> button label
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _DATE_RE = re.compile(r"^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}")
-_PHONE_HEADER_WORDS = ("phone", "number", "mobile", "tel", "cell", "contact")
+_PHONE_HEADER_WORDS = db.PHONE_HEADER_WORDS
 
 # The country an upload's local-looking numbers are read as, unless the upload
 # form says otherwise. A value that arrives with + or 00 carries its own
@@ -365,11 +365,28 @@ def classify_row(checks: dict) -> tuple[str, str]:
     as written, so phrase it for a person: "not a real AU number", "already
     flagged", "same number as an earlier row".
 
-    Several checks can be true at once, and which one the user is told about is
-    a judgement call: a blocked duplicate, or a number that parses fine but
-    belongs to another country while "only this country" is on.
+    Several checks can be true at once, so the order below is the policy. A
+    block is a decision somebody made about that number, so it is reported ahead
+    of the file merely repeating itself; otherwise a flagged number arriving
+    twice would be written off as a duplicate and the flag never seen. The
+    country check comes last of the held-back reasons because it is the only one
+    the uploader can undo from the form itself.
     """
-    # TODO(human)
+    if not checks.get("has_digits"):
+        return "no_phone", "no number in that column"
+    if not checks.get("e164"):
+        return "invalid", "not a real, dialable number"
+    if checks.get("blocked"):
+        return "blocked", "already flagged do not even try"
+    if checks.get("seen_in_file"):
+        return "duplicate", "same number as an earlier row"
+    if checks.get("strict") and not checks.get("same_dial_code"):
+        region = checks.get("region") or ""
+        country = checks.get("country") or ""
+        return "wrong_country", (
+            f"a {region} number, not {country}" if region else "from another country"
+        )
+    return "valid", ""
 
 
 def validate_rows(

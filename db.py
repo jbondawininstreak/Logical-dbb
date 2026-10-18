@@ -239,7 +239,24 @@ def list_sources() -> list[dict]:
 # --- leads --------------------------------------------------------------------
 
 
+# What a phone column can be called. common.py reads this from here so there is
+# one list rather than one per layer.
+PHONE_HEADER_WORDS = ("phone", "number", "mobile", "tel", "cell", "contact")
+
+_DIGITS = re.compile(r"\D")
+
+
+def _digit_count(value) -> int:
+    return len(_DIGITS.sub("", str(value or "")))
+
+
 def pick_phone_column(rows: list[dict], phone_column: str) -> str:
+    """Which column holds the phone number.
+
+    The name given on the form wins, then any header that reads like a phone
+    column, then the column whose values actually look like phone numbers, for a
+    file whose headers say nothing useful.
+    """
     headers: list[str] = []
     for row in rows:
         for key in row.keys():
@@ -256,11 +273,20 @@ def pick_phone_column(rows: list[dict], phone_column: str) -> str:
             f"Phone column '{wanted}' not found. Columns are: {', '.join(headers)}"
         )
     for h in headers:
-        if "phone" in h.lower():
+        if any(word in h.lower() for word in PHONE_HEADER_WORDS):
             return h
+    # Nothing in the headers: count the values that could be dialled.
+    best, best_hits = "", 0
+    for h in headers:
+        hits = sum(1 for row in rows if 8 <= _digit_count(row.get(h)) <= 15)
+        if hits > best_hits:
+            best, best_hits = h, hits
+    if best and best_hits * 2 >= len(rows):
+        return best
     raise ValueError(
         "No phone column found. Name one in the upload, or use a header that "
-        f"contains 'phone'. Columns are: {', '.join(headers)}"
+        f"says what it holds ({', '.join(PHONE_HEADER_WORDS)}). "
+        f"Columns are: {', '.join(headers)}"
     )
 
 
