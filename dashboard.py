@@ -203,7 +203,7 @@ label.check b { color: var(--text); font-weight: 550; display: block; font-size:
 .pill.off { background: var(--inset); color: var(--muted); }
 .muted { color: var(--muted); }
 form.inline { display: inline; }
-.note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+.note { font-size: 13px; color: var(--muted); margin: 8px 0 16px; }
 """
 
 # Home-screen tiles. Each glyph is an inline stroke drawing so the page stays a
@@ -678,7 +678,7 @@ def preview_body(results: list[dict], token: str, key: str, source: str,
         cells = [
             pill(STATUS_LABELS.get(status, status), STATUS_PILLS.get(status, "off")),
             e(r["phone"] or r["raw"]),
-            e(r["region"]),
+            e(f"{r['region']} +{r['dial_code']}" if r.get("dial_code") else r["region"]),
             e((r["timezones"] or ("",))[0]),
             f"<span class='muted'>{e(r['reason'])}</span>",
         ]

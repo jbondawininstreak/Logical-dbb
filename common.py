@@ -325,6 +325,14 @@ def country_timezones(country: str) -> tuple[str, ...]:
     return tuple(z for z in phone_tz.time_zones_for_number(example) if z != "Etc/Unknown")
 
 
+def _dial_code(region: str) -> int:
+    """The calling code of an ISO country, 0 when there is not one."""
+    try:
+        return phonenumbers.country_code_for_region((region or "").upper()) or 0
+    except Exception:
+        return 0
+
+
 def _shares_dial_code(region: str, country: str) -> bool:
     """True when two ISO countries share a calling code.
 
@@ -381,11 +389,15 @@ def classify_row(checks: dict) -> tuple[str, str]:
     if checks.get("seen_in_file"):
         return "duplicate", "same number as an earlier row"
     if checks.get("strict") and not checks.get("same_dial_code"):
-        region = checks.get("region") or ""
         country = checks.get("country") or ""
-        return "wrong_country", (
-            f"a {region} number, not {country}" if region else "from another country"
-        )
+        code = checks.get("dial_code") or 0
+        own = checks.get("country_dial_code") or 0
+        if code:
+            return "wrong_country", (
+                f"a +{code} number, {country} is +{own}" if own
+                else f"a +{code} number, not {country}"
+            )
+        return "wrong_country", "from another country"
     return "valid", ""
 
 
@@ -419,7 +431,9 @@ def validate_rows(
                 "has_digits": bool(_digits_and_plus(raw).lstrip("+")),
                 "e164": e164,
                 "region": region,
+                "dial_code": _dial_code(region),
                 "country": country,
+                "country_dial_code": _dial_code(country),
                 "same_dial_code": _shares_dial_code(region, country),
                 "strict": bool(strict),
                 "seen_in_file": bool(key) and key in seen,
@@ -436,6 +450,7 @@ def validate_rows(
                 "phone": e164,
                 "key": key,
                 "region": region,
+                "dial_code": _dial_code(region),
                 "timezones": zones,
                 "status": status,
                 "reason": reason,
