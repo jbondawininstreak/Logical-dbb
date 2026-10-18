@@ -1,0 +1,19 @@
+[Unit]
+Description=Telegram CRM (admin bot, CRM bot, dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=crm
+Group=crm
+WorkingDirectory=/opt/crm
+ExecStart=/opt/crm/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+# .env in /opt/crm is read by the app itself (python-dotenv).
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

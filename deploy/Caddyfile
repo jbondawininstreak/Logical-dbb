@@ -1,0 +1,5 @@
+# Caddy terminates HTTPS for the dashboard and forwards to the app on localhost.
+# CRM_DOMAIN is set in /etc/caddy/environment by deploy/setup.sh.
+{$CRM_DOMAIN} {
+    reverse_proxy 127.0.0.1:8000
+}

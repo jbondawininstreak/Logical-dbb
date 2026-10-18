@@ -7,6 +7,7 @@ form field) or gets a 403. Started on port 8000 by run.py via main().
 
 import html
 import json
+import os
 from typing import Optional
 from urllib.parse import quote
 
@@ -476,7 +477,10 @@ async def lead_get(phone: str, key: str = Depends(require_key)):
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Defaults to localhost only. On a server, Caddy (deploy/Caddyfile) proxies to it.
+    host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
+    port = int(os.environ.get("DASHBOARD_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
