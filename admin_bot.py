@@ -27,7 +27,9 @@ HELP_TEXT = "\n".join(
         "/allow <chat_id> [title] - let the CRM bot work in that group chat",
         "/revoke <chat_id> - stop the CRM bot working in that group chat",
         "/chats - show the allowed group chats",
-        "Send me a .csv file - load its rows as new leads (first row is the headers; the file name is the source)",
+        "Send me a CSV, TSV, text, Excel or JSON file - load its rows as new leads "
+        "(the file name is the source; numbers are checked as "
+        f"{common.DEFAULT_COUNTRY} unless they carry their own country code)",
         "/push [chat_id] - post the next new lead to a group chat",
         "/release <lead_id> - un-claim a lead so someone else can take it",
         "/stats - show how many leads are new, posted, claimed and each outcome",
@@ -110,40 +112,50 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     message = update.effective_message
     document = message.document
     name = (document.file_name or "").lower()
-    mime = (document.mime_type or "").lower()
-    if not (name.endswith(".csv") or mime == "text/csv"):
+    if not name.endswith(common.UPLOAD_EXTENSIONS):
         await message.reply_text(
-            "Sorry, I can only load leads from a .csv file. Please send a CSV."
+            "I can load " + ", ".join(common.UPLOAD_EXTENSIONS) + " files. "
+            "Send one of those, or use the dashboard to see the checks first."
         )
         return
 
     file = await document.get_file()
     raw = bytes(await file.download_as_bytearray())
     try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
-
-    rows = common.parse_csv(text)
-
+        rows = common.parse_upload(document.file_name or "", raw)
+    except Exception as exc:
+        await message.reply_text(f"That file could not be read: {exc}")
+        return
     if not rows:
-        await message.reply_text(
-            "That CSV has no lead rows. The first row must be the headers, "
-            "followed by one lead per row."
-        )
+        await message.reply_text("That file has no rows in it.")
         return
 
-    source_name = re.sub(r"\.csv$", "", document.file_name or "", flags=re.IGNORECASE).strip()
-    if not source_name:
-        source_name = "admin-upload"
+    source_name = re.sub(
+        r"\.[A-Za-z0-9]+$", "", document.file_name or ""
+    ).strip() or "admin-upload"
+
+    # The same checks the dashboard runs before it writes anything. Here there is
+    # no preview to approve, so the country is the configured default and numbers
+    # from elsewhere are kept rather than held back.
     try:
-        result = db.add_leads(rows, source_name=source_name, phone_column="")
+        results = common.validate_rows(
+            rows, country=common.DEFAULT_COUNTRY, strict=False,
+            phone_column="", blocked=db.blocked_phones(),
+        )
     except ValueError as exc:
         await message.reply_text(str(exc))
         return
+    result = db.add_validated_leads(
+        results, source_name, country=common.DEFAULT_COUNTRY
+    )
+    held = ", ".join(
+        f"{count} {status.replace('_', ' ')}"
+        for status, count in (result.get("skipped") or {}).items() if count
+    )
     await message.reply_text(
-        f"Loaded {result['added']} leads ({result['skipped_blocked']} skipped as do-not-call). "
-        "Send /push to post the first one."
+        f"Loaded {result['added']} leads as {common.DEFAULT_COUNTRY} numbers"
+        + (f" ({held} held back)." if held else ".")
+        + " Send /push to post the first one."
     )
 
 

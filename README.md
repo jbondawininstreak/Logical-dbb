@@ -7,10 +7,10 @@ Two Telegram bots and a web dashboard, sharing one database hosted on Turso (a f
 1. **Make two bots.** In Telegram, open **@BotFather** and send `/newbot`. Follow the prompts and copy the token it gives you. Do it a second time for the second bot. Name them something like `MyAdminBot` and `MyCRMBot`. Keep both tokens.
 2. **Get your user ID.** Open **@userinfobot** in Telegram and send it anything. It replies with your ID, a number.
 3. **Make a Turso database.** Go to turso.tech, sign up (free, no card), click *Create database*, name it `crm`. On the database page copy the **URL** (shown as `libsql://...`) and click *Generate token*; copy that too. Paste the URL as-is; the app swaps the `libsql://` scheme for `https://`, which is the transport Turso actually accepts.
-4. **Fill in `.env`.** Copy `.env.example` to `.env`: `ADMIN_BOT_TOKEN`, `CRM_BOT_TOKEN`, `ADMIN_USER_ID`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DASHBOARD_KEY` (any long random word you make up).
+4. **Fill in `.env`.** Copy `.env.example` to `.env`: `ADMIN_BOT_TOKEN`, `CRM_BOT_TOKEN`, `ADMIN_USER_ID`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DASHBOARD_KEY` (any long random word you make up). `DEFAULT_COUNTRY` is optional: the two-letter country the upload form starts on and the one the admin bot uses, `GB` when it is not set.
 5. **Run it.** `pip install -r requirements.txt` then `python run.py`. Open `http://localhost:8000/?key=<your DASHBOARD_KEY>` in a browser.
 6. **Connect the group.** Add the CRM bot to the callers' group; it posts the chat ID. On the dashboard's *Chats* page, add that ID.
-7. **Upload leads.** Dashboard *Upload*: pick the CSV, type a source name (for example `list-oct-18`), submit. Then click *Push*.
+7. **Upload leads.** Dashboard *Upload*: pick the file, type a source name (for example `list-oct-18`), choose the country its local-looking numbers should be read as, and submit. You get a row-by-row check first and nothing is saved until you press *Load*. Then click *Push*.
 8. **Work the leads.** Callers tap *I'm calling it*, then *Answered* when a human picks up, then the outcome. Calls over 5 minutes ask for notes. *Do not even try* hides a number; confirm or unflag it on the *Flags* page.
 
 ## Hosting on a server
@@ -42,7 +42,8 @@ Every page needs `?key=<your DASHBOARD_KEY>` on the end of the address, or it an
 | Page | What it shows or does |
 |---|---|
 | `/` | Queue counts (new, posted, claimed, closed, blocked), outcomes per source with an answer rate, outcomes per caller, and the *Push* button that posts the next lead to a chat. |
-| `/upload` | Form to upload a CSV with a source name and an optional phone column; tells you how many leads were added and how many were skipped as do-not-call. |
+| `/upload` | Upload a file in any supported format with a source name, a country, a time zone and an optional phone column. Shows every row with its status before anything is written; *Load* then saves only the rows that passed. |
+| `/sources` | Every source uploaded so far, its lead count, and the country and time zone it was read as. |
 | `/chats` | The allowed group chats; add one by ID and title, or remove one. |
 | `/flags` | Numbers callers marked *Do not even try*, pending first; *Confirm* keeps the block, *Unflag* puts the leads back in the queue. |
 | `/attempts` | The last 200 call attempts, newest first: date, caller, phone, source, outcome, talk time, notes. |
@@ -74,7 +75,7 @@ The dashboard is the normal way to run things. The admin bot still answers these
 | `/allow <chat_id> [title]` | Lets the CRM bot work in that group chat. |
 | `/revoke <chat_id>` | Stops the CRM bot working in that group chat. |
 | `/chats` | Lists the allowed group chats. |
-| Upload a `.csv` file | Loads the rows as new leads. The file name (without `.csv`) becomes the source name. |
+| Upload a file | Loads the rows as new leads, running the same checks as the dashboard. The file name without its extension becomes the source name. CSV, TSV, text, Excel and JSON are accepted. There is no preview here, so numbers are read as `DEFAULT_COUNTRY` and numbers from other countries are kept rather than held back. |
 | `/push [chat_id]` | Posts the next new lead to the group. If only one chat is allowed, you can leave out the ID. |
 | `/release <lead_id>` | Un-claims a lead so someone else can take it. |
 | `/stats` | Shows how many leads are new, posted, claimed, closed, blocked, and each outcome count. |
@@ -89,8 +90,13 @@ Where the brief left something open, we picked the simplest option. The choices 
 - CSV rows are tidied before saving: header names and values are trimmed, values past the last header are kept as `Column N`, and fully blank rows are skipped. A CSV with no lead rows gets a friendly message instead of `Loaded 0 leads`.
 - CSV files are decoded as UTF-8 with any Excel byte-order mark removed, falling back to latin-1.
 - If the first CSV row holds an email, a phone number or a date, the file is treated as having no header row: that row is kept as a lead and the columns are named Email, Phone, Region, Date or `Column N` from their contents.
-- Phone numbers (a column named phone, number, mobile, tel, cell or contact, or any all-digit value of 8 to 15 digits) are shown in international form: `44…` and `0044…` become `+44…`, a UK `0…` number becomes `+44…`, and Excel's `4.48E+11` form is unwrapped. Numbers with a `+` already are kept as they are.
-- Lead keys are digits only, taken after the +44 normalisation above (`+447911 123456` is keyed as `447911123456`), so the same number matches across uploads whatever shape it arrived in.
+- Phone numbers are turned into E.164 by Google's libphonenumber (the `phonenumbers` package), not by rules of our own. A number written the local way is read with the country chosen on the upload form; one that already starts with `+` or `00` carries its own country code and that is used instead. Excel's `4.48E+11` form is unwrapped first. A number libphonenumber does not accept as real and dialable is held back, not loaded.
+- The country a number turns out to belong to is compared by calling code, not by country letters, because `+44` covers GB, GG, JE and IM and a real UK mobile often reports itself as Guernsey. Without that, *only this country* would hold back valid UK numbers.
+- Lead keys are still digits only (`+447911123456` is keyed as `447911123456`), so a number matches its own earlier uploads, flags and call history whatever shape and country format it arrived in.
+- Nothing is written to the database until the upload preview is accepted. The parsed file waits in the dashboard's own memory for half an hour, so a restart or a long pause means uploading it again; no leads are half-loaded either way.
+- An upload's file format is picked from its extension, falling back to the first bytes of the file (a `PK` header is a workbook, a leading `[` or `{` is JSON, anything else is read as delimited text). Delimited files have their separator sniffed, so comma, tab, semicolon and pipe all work, and a file with one value per line is read as a single column.
+- A spreadsheet's first sheet is the one that is read. Numbers and dates arrive as real values rather than text, so `448000000000.0` loses its `.0` and a date cell becomes `YYYY-MM-DD`.
+- JSON may be an array of objects (each object's own keys become the columns), one object per line, or an array of arrays (read as a grid like a CSV).
 - `/push <chat_id>` on the admin bot for a chat that is not allowed replies `Chat <id> is not allowed. Send /allow <id> first.` Missing or non-numeric arguments on `/allow`, `/revoke`, `/push` and `/release` get a one-line usage hint.
 - Admin bot `/stats` lines are labelled `New`, `Posted`, `Claimed`, `Closed`, `Blocked`, `No R`, `Hung up`, `On the phone`.
 - `/release` skips the group-message edit when the lead was never posted (no chat or message ID).

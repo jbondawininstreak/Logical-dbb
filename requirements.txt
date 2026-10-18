@@ -4,3 +4,5 @@ libsql-client>=0.3
 fastapi
 uvicorn
 python-multipart
+phonenumbers>=8.13
+openpyxl>=3.1

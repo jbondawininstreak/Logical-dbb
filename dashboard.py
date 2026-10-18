@@ -8,8 +8,13 @@ form field) or gets a 403. Started on port 8000 by run.py via main().
 import html
 import json
 import os
+import secrets
+import time
 from typing import Optional
 from urllib.parse import quote
+from zoneinfo import available_timezones
+
+import phonenumbers
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -44,18 +49,183 @@ async def require_key(request: Request) -> str:
 # html helpers
 
 CSS = """
-body { font-family: sans-serif; font-size: 14px; margin: 16px; }
-table { border-collapse: collapse; margin: 8px 0 16px 0; }
-th, td { border: 1px solid #888; padding: 3px 8px; text-align: left; vertical-align: top; }
-th { background: #eee; }
-nav a { margin-right: 12px; }
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --bg: #f2f2f7;
+  --inset: #f2f2f7;
+  --elev: #ffffff;
+  --bar: rgba(242,242,247,0.82);
+  --text: #1c1c1e;
+  --muted: #6e6e73;
+  --line: rgba(60,60,67,0.13);
+  --tint: #007aff;
+  --ok: #34c759;
+  --warn: #ff9f0a;
+  --bad: #ff3b30;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --shadow: 0 1px 2px rgba(0,0,0,0.05), 0 10px 28px rgba(0,0,0,0.055);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --inset: #2c2c2e;
+    --elev: #1c1c1e;
+    --bar: rgba(0,0,0,0.7);
+    --text: #f5f5f7;
+    --muted: #98989d;
+    --line: rgba(84,84,88,0.5);
+    --tint: #0a84ff;
+    --ok: #30d158;
+    --warn: #ffd60a;
+    --bad: #ff453a;
+    --shadow: 0 1px 2px rgba(0,0,0,0.6);
+    color-scheme: dark;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 0 0 56px;
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+        system-ui, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* the translucent title bar, the way a Mac window or an iOS screen heads itself */
+.bar {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--bar);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--line);
+}
+.bar .inner {
+  display: flex; align-items: center; gap: 10px;
+  height: 52px; max-width: 980px; margin: 0 auto; padding: 0 16px;
+}
+.bar h1 {
+  flex: 1; margin: 0; text-align: center;
+  font-size: 17px; font-weight: 600; letter-spacing: -0.01em;
+}
+.bar a.back, .bar .spacer { min-width: 72px; }
+.bar a.back {
+  color: var(--tint); text-decoration: none; font-weight: 450;
+  display: inline-flex; align-items: center; gap: 2px;
+}
+.wrap { max-width: 980px; margin: 0 auto; padding: 18px 16px 0; }
+
+/* the home screen: rounded app icons with notification badges */
+.grid {
+  display: grid; gap: 20px 14px; margin: 6px 0 26px;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+}
+.tile { text-decoration: none; color: var(--text);
+        display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.tile .icon {
+  position: relative; width: 66px; height: 66px; border-radius: 21px;
+  display: grid; place-items: center; color: #fff;
+  background-image: linear-gradient(180deg, var(--c1), var(--c2));
+  box-shadow: var(--shadow);
+  transition: transform 0.12s ease;
+}
+.tile:hover .icon { transform: translateY(-2px); }
+.tile:active .icon { transform: scale(0.94); }
+.tile .label { font-size: 12.5px; color: var(--muted); text-align: center; }
+.tile .badge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 21px; height: 21px; padding: 0 6px; border-radius: 11px;
+  background: var(--bad); color: #fff;
+  font-size: 11.5px; font-weight: 650; line-height: 21px; text-align: center;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+/* grouped content, the way Settings stacks its sections */
+.card {
+  background: var(--elev); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 14px 16px; margin: 0 0 16px;
+}
+.card > h3:first-child { margin-top: 0; }
+.card h3 {
+  margin: 0 0 11px; font-size: 12px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: 0.055em; color: var(--muted);
+}
+.stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
+.stat { background: var(--inset); border-radius: var(--radius-sm); padding: 10px 12px; }
+.stat b { display: block; font-size: 23px; font-weight: 600; letter-spacing: -0.025em; }
+.stat span { font-size: 12px; color: var(--muted); }
+
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+         vertical-align: top; white-space: nowrap; }
+th { font-size: 11.5px; font-weight: 650; color: var(--muted);
+     text-transform: uppercase; letter-spacing: 0.04em; }
+tr:last-child td { border-bottom: 0; }
+td pre, td.free { white-space: pre-wrap; }
+a { color: var(--tint); }
+
+button, .btn {
+  font: inherit; font-weight: 590; border: 0; border-radius: 980px;
+  padding: 9px 17px; background: var(--tint); color: #fff; cursor: pointer;
+  text-decoration: none; display: inline-block;
+}
+button:active, .btn:active { filter: brightness(0.92); }
+button.plain { background: var(--inset); color: var(--text); }
+button.danger { background: var(--bad); }
+button.small { padding: 5px 12px; font-size: 13px; }
+
+label.field { display: block; margin: 0 0 13px; }
+label.field > span { display: block; font-size: 12.5px; color: var(--muted); margin: 0 0 5px; }
+input[type=text], input[type=file], select {
+  font: inherit; width: 100%; max-width: 430px; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--elev); color: var(--text);
+}
+label.check { display: flex; gap: 9px; align-items: flex-start; margin: 0 0 13px; max-width: 430px; }
+label.check input { margin: 3px 0 0; }
+label.check span { font-size: 13.5px; color: var(--muted); }
+label.check b { color: var(--text); font-weight: 550; display: block; font-size: 15px; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.row > * { flex: 1 1 200px; }
+.row > button { flex: 0 0 auto; }
+
+.pill { display: inline-block; padding: 2px 9px; border-radius: 980px;
+        font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.ok { background: rgba(52,199,89,0.16); color: var(--ok); }
+.pill.bad { background: rgba(255,59,48,0.16); color: var(--bad); }
+.pill.warn { background: rgba(255,159,10,0.18); color: var(--warn); }
+.pill.off { background: var(--inset); color: var(--muted); }
+.muted { color: var(--muted); }
 form.inline { display: inline; }
-.muted { color: #666; }
-pre { margin: 0; white-space: pre-wrap; }
+.note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
 """
 
-PAGES = [("/", "Home"), ("/upload", "Upload"), ("/chats", "Chats"),
-         ("/flags", "Flags"), ("/attempts", "Attempts")]
+# Home-screen tiles. Each glyph is an inline stroke drawing so the page stays a
+# single file with nothing to fetch.
+_GLYPHS = {
+    "upload": "<path d='M14 20V6M8 12l6-6 6 6'/><path d='M5 20v3h18v-3'/>",
+    "attempts": "<path d='M6 5h4l2 5-3 2a11 11 0 006 6l2-3 5 2v4a2 2 0 01-2 2A17 17 0 014 7a2 2 0 012-2z'/>",
+    "flags": "<path d='M7 22V4h10l-2 4 2 4H7'/>",
+    "chats": "<path d='M4 7h16v10H11l-5 4v-4H4z'/>",
+    "sources": "<ellipse cx='14' cy='7' rx='9' ry='3.5'/><path d='M5 7v6c0 1.9 4 3.5 9 3.5s9-1.6 9-3.5V7'/>"
+               "<path d='M5 13v6c0 1.9 4 3.5 9 3.5s9-1.6 9-3.5v-6'/>",
+}
+
+TILES = [
+    ("/upload", "Upload", "upload", "#34c759", "#1f9c42"),
+    ("/attempts", "Attempts", "attempts", "#0a84ff", "#0060df"),
+    ("/flags", "Flags", "flags", "#ff3b30", "#c9271e"),
+    ("/chats", "Chats", "chats", "#5e5ce6", "#3f3dc4"),
+    ("/sources", "Sources", "sources", "#ff9f0a", "#d97d00"),
+]
+
+PAGES = [(p, label) for p, label, _g, _a, _b in TILES]
 
 
 def e(value) -> str:
@@ -74,31 +244,70 @@ def hidden_key(key: str) -> str:
     return f'<input type="hidden" name="key" value="{e(key)}">'
 
 
-def nav(key: str) -> str:
-    return "<nav>" + "".join(
-        f'<a href="{href(p, key)}">{e(label)}</a>' for p, label in PAGES
-    ) + "</nav><hr>"
+def glyph(name: str) -> str:
+    """One tile icon, drawn inline so the page fetches nothing."""
+    return (
+        "<svg viewBox='0 0 28 28' width='29' height='29' fill='none' "
+        "stroke='currentColor' stroke-width='2' stroke-linecap='round' "
+        f"stroke-linejoin='round'>{_GLYPHS.get(name, '')}</svg>"
+    )
 
 
-def page(title: str, body: str, key: str) -> HTMLResponse:
+def tile(path: str, label: str, name: str, c1: str, c2: str, key: str, badge=0) -> str:
+    dot = f"<span class='badge'>{e(badge)}</span>" if badge else ""
+    return (
+        f'<a class="tile" href="{href(path, key)}">'
+        f"<span class='icon' style=\"--c1:{e(c1)};--c2:{e(c2)}\">{glyph(name)}{dot}</span>"
+        f'<span class="label">{e(label)}</span></a>'
+    )
+
+
+def card(inner: str, title: str = "") -> str:
+    head = f"<h3>{e(title)}</h3>" if title else ""
+    return f'<section class="card">{head}{inner}</section>'
+
+
+def stats_row(pairs: list[tuple[str, object]]) -> str:
+    """Big-number tiles, the way a Mac widget reads out a few counts."""
+    cells = "".join(
+        f'<div class="stat"><b>{e(value)}</b><span>{e(label)}</span></div>'
+        for label, value in pairs
+    )
+    return f'<div class="stats">{cells}</div>'
+
+
+def pill(text: str, kind: str = "off") -> str:
+    return f'<span class="pill {e(kind)}">{e(text)}</span>'
+
+
+def page(title: str, body: str, key: str, home: bool = False) -> HTMLResponse:
+    """The whole document. `home` drops the back link, since home is the top."""
+    left = (
+        '<span class="spacer"></span>' if home
+        else f'<a class="back" href="{href("/", key)}">&lsaquo; Home</a>'
+    )
     doc = (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1, "
+        "viewport-fit=cover'>"
         f"<title>{e(title)}</title><style>{CSS}</style></head><body>"
-        f"{nav(key)}<h2>{e(title)}</h2>{body}</body></html>"
+        f'<div class="bar"><div class="inner">{left}<h1>{e(title)}</h1>'
+        '<span class="spacer"></span></div></div>'
+        f'<div class="wrap">{body}</div></body></html>'
     )
     return HTMLResponse(doc)
 
 
 def table(headers: list[str], rows: list[list[str]]) -> str:
-    """Rows contain already-escaped HTML cells."""
+    """Rows contain already-escaped HTML cells. Scrolls sideways on a phone."""
     if not rows:
         return "<p class='muted'>(none)</p>"
-    out = ["<table><tr>"]
+    out = ['<div class="scroll"><table><tr>']
     out += [f"<th>{e(h)}</th>" for h in headers]
     out.append("</tr>")
     for r in rows:
         out.append("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>")
-    out.append("</table>")
+    out.append("</table></div>")
     return "".join(out)
 
 
@@ -154,25 +363,57 @@ def redirect(path: str, key: str) -> RedirectResponse:
 @app.get("/", response_class=HTMLResponse)
 async def home(key: str = Depends(require_key)):
     counts = db.stats()
-    counts_html = table(
-        ["new", "posted", "claimed", "closed", "blocked"],
-        [[e(counts.get(k, 0)) for k in ("new", "posted", "claimed", "closed", "blocked")]],
+    chats = db.list_chats()
+    sources = db.list_sources()
+    pending_flags = len([f for f in db.list_flags() if not f.get("confirmed")])
+    badges = {
+        "/flags": pending_flags,
+        "/chats": len(chats),
+        "/sources": len(sources),
+    }
+    tiles = "".join(
+        tile(path, label, name, c1, c2, key, badges.get(path, 0))
+        for path, label, name, c1, c2 in TILES
     )
 
+    queue = stats_row([
+        (label, counts.get(k, 0))
+        for label, k in (("New", "new"), ("Posted", "posted"), ("Claimed", "claimed"),
+                         ("Closed", "closed"), ("Blocked", "blocked"))
+    ])
+
+    if chats:
+        options = "".join(
+            f'<option value="{e(ch["chat_id"])}">{e(ch["chat_id"])} '
+            f'{e(ch.get("title") or "")}</option>'
+            for ch in chats
+        )
+        push = (
+            f'<form method="post" action="{href("/push", key)}">{hidden_key(key)}'
+            f'<div class="row"><label class="field"><span>Group chat</span>'
+            f'<select name="chat_id">{options}</select></label>'
+            '<button type="submit">Push next lead</button></div></form>'
+        )
+    else:
+        push = (
+            "<p class='muted'>No allowed chats yet. "
+            f"<a href=\"{href('/chats', key)}\">Add one</a> before pushing.</p>"
+        )
+
     src_rows = []
-    for s in db.stats_by_source():
-        attempts = pick(s, "attempts", default=0)
-        answered = pick(s, "answered", default=0)
+    for s_ in db.stats_by_source():
+        attempts = pick(s_, "attempts", default=0)
+        answered = pick(s_, "answered", default=0)
         src_rows.append([
-            e(pick(s, "source", "name", "source_name")),
-            e(pick(s, "leads", default=0)),
+            e(pick(s_, "source", "name", "source_name")),
+            e(pick(s_, "leads", default=0)),
             e(attempts),
             e(answered),
             e(pct(answered, attempts)),
-            e(pick(s, "no_response", default=0)),
-            e(pick(s, "hung_up", default=0)),
-            e(pick(s, "on_phone", default=0)),
-            e(avg_talk(s.get("avg_talk_seconds"))),
+            e(pick(s_, "no_response", default=0)),
+            e(pick(s_, "hung_up", default=0)),
+            e(pick(s_, "on_phone", default=0)),
+            e(avg_talk(s_.get("avg_talk_seconds"))),
         ])
     src_html = table(
         ["Source", "Leads", "Attempts", "Answered", "Answer rate",
@@ -195,77 +436,314 @@ async def home(key: str = Depends(require_key)):
         caller_rows,
     )
 
-    chats = db.list_chats()
-    if chats:
-        options = "".join(
-            f'<option value="{e(ch["chat_id"])}">{e(ch["chat_id"])} '
-            f'{e(ch.get("title") or "")}</option>'
-            for ch in chats
-        )
-        push_html = (
-            f'<form method="post" action="{href("/push", key)}">{hidden_key(key)}'
-            f'<select name="chat_id">{options}</select> '
-            '<button type="submit">Push next lead</button></form>'
-        )
-    else:
-        push_html = (
-            f"<p class='muted'>No allowed chats. "
-            f"<a href=\"{href('/chats', key)}\">Add one</a> first.</p>"
-        )
-
     body = (
-        "<h3>Queue</h3>" + counts_html +
-        "<h3>Push</h3>" + push_html +
-        "<h3>By source</h3>" + src_html +
-        "<h3>By caller</h3>" + caller_html
+        f'<div class="grid">{tiles}</div>'
+        + card(queue, "Queue")
+        + card(push, "Push")
+        + card(src_html, "By source")
+        + card(caller_html, "By caller")
     )
-    return page("CRM dashboard", body, key)
+    return page("CRM", body, key, home=True)
+
+
+# ---------------------------------------------------------------------------
+# sources
+
+@app.get("/sources", response_class=HTMLResponse)
+async def sources_get(key: str = Depends(require_key)):
+    rows = []
+    for s_ in db.list_sources():
+        country = (s_.get("country") or "").upper()
+        rows.append([
+            e(s_.get("name")),
+            e(s_.get("leads", 0)),
+            pill(country, "ok") if country else pill("not set", "off"),
+            e(s_.get("timezone") or ""),
+            e(s_.get("created_at")),
+        ])
+    body = card(
+        table(["Source", "Leads", "Read as", "Time zone", "Created"], rows)
+        + "<p class='note'>The country a source was read as is what its local-looking "
+          "numbers were turned into E.164 with. Sources uploaded before this was "
+          "recorded show no country.</p>",
+        "Uploaded sources",
+    )
+    return page("Sources", body, key)
 
 
 # ---------------------------------------------------------------------------
 # upload
 
-def upload_form(key: str) -> str:
+# A parsed upload waiting for its Commit button. Held in this process on
+# purpose: a preview is worth nothing after a restart, and the dashboard runs as
+# one process, so a table in Turso would be more writes for no gain.
+_PENDING: dict[str, dict] = {}
+_PENDING_TTL = 1800
+_PENDING_MAX = 12
+
+_COMMON_COUNTRIES = ("AU", "GB", "US", "CA", "NZ", "IE", "ZA", "AE", "SG", "IN",
+                     "DE", "FR", "ES", "NL")
+
+STATUS_PILLS = {
+    "valid": "ok",
+    "invalid": "bad",
+    "wrong_country": "warn",
+    "duplicate": "warn",
+    "blocked": "bad",
+    "no_phone": "off",
+}
+
+STATUS_LABELS = {
+    "valid": "Ready",
+    "invalid": "Not a real number",
+    "wrong_country": "Another country",
+    "duplicate": "Duplicate",
+    "blocked": "Do not even try",
+    "no_phone": "No number",
+}
+
+
+def _sweep_pending() -> None:
+    cutoff = time.time() - _PENDING_TTL
+    for token in [t for t, v in _PENDING.items() if v["at"] < cutoff]:
+        _PENDING.pop(token, None)
+    while len(_PENDING) > _PENDING_MAX:
+        _PENDING.pop(min(_PENDING, key=lambda t: _PENDING[t]["at"]), None)
+
+
+def _stash(payload: dict) -> str:
+    _sweep_pending()
+    token = secrets.token_urlsafe(16)
+    _PENDING[token] = dict(payload, at=time.time())
+    return token
+
+
+def _unstash(token: str) -> Optional[dict]:
+    _sweep_pending()
+    return _PENDING.get(token or "")
+
+
+def country_options(selected: str) -> str:
+    """Every country phonenumbers knows, the ones in regular use pinned on top."""
+    selected = (selected or common.DEFAULT_COUNTRY).upper()
+    rest = sorted(r for r in phonenumbers.SUPPORTED_REGIONS if r not in _COMMON_COUNTRIES)
+    out = []
+    for group, codes in (("Common", _COMMON_COUNTRIES), ("All", rest)):
+        out.append(f'<optgroup label="{e(group)}">')
+        for code in codes:
+            try:
+                dial = phonenumbers.country_code_for_region(code)
+            except Exception:
+                dial = 0
+            mark = " selected" if code == selected else ""
+            label = f"{code}  +{dial}" if dial else code
+            out.append(f'<option value="{e(code)}"{mark}>{e(label)}</option>')
+        out.append("</optgroup>")
+    return "".join(out)
+
+
+def timezone_options(selected: str) -> str:
+    """Automatic first, then every zone Python knows."""
+    mark = "" if selected else " selected"
+    out = [f'<option value=""{mark}>Automatic - from the country above</option>']
+    for zone in sorted(available_timezones()):
+        hit = " selected" if zone == selected else ""
+        out.append(f'<option value="{e(zone)}"{hit}>{e(zone)}</option>')
+    return "".join(out)
+
+
+def upload_form(key: str, country: str = "", timezone: str = "",
+                strict: bool = False, source: str = "", phone_column: str = "") -> str:
+    accept = ",".join(common.UPLOAD_EXTENSIONS)
     return (
         f'<form method="post" action="{href("/upload", key)}" '
         f'enctype="multipart/form-data">{hidden_key(key)}'
-        '<p>CSV file: <input type="file" name="csv" accept=".csv,text/csv" required></p>'
-        '<p>Source name: <input type="text" name="source" required></p>'
-        '<p>Phone column (optional): <input type="text" name="phone_column"></p>'
-        '<p><button type="submit">Upload</button></p></form>'
+        f'<label class="field"><span>File</span>'
+        f'<input type="file" name="upload" accept="{e(accept)}" required></label>'
+        f"<p class='note'>CSV, TSV, plain text, Excel (.xlsx, .xlsm), JSON or JSONL. "
+        f"Whatever columns the file has are kept as they are; only the phone column "
+        f"has to be readable.</p>"
+        f'<label class="field"><span>Source name</span>'
+        f'<input type="text" name="source" value="{e(source)}" '
+        f'placeholder="list-oct-18" required></label>'
+        f'<label class="field"><span>Phone column (optional)</span>'
+        f'<input type="text" name="phone_column" value="{e(phone_column)}" '
+        f'placeholder="left empty, any column named phone is used"></label>'
+        f'<label class="field"><span>Read local numbers as</span>'
+        f'<select name="country">{country_options(country)}</select></label>'
+        f"<p class='note'>Numbers written the local way are turned into E.164 for "
+        f"this country. A number that already starts with + or 00 carries its own "
+        f"country code and keeps it.</p>"
+        f'<label class="field"><span>Time zone for this list</span>'
+        f'<select name="timezone">{timezone_options(timezone)}</select></label>'
+        f'<label class="check"><input type="checkbox" name="strict" value="1"'
+        f'{" checked" if strict else ""}>'
+        f"<span><b>Only this country</b>Numbers that are real but belong somewhere "
+        f"else are held back instead of loaded.</span></label>"
+        '<p><button type="submit">Check the file</button></p></form>'
     )
 
 
 @app.get("/upload", response_class=HTMLResponse)
 async def upload_get(key: str = Depends(require_key)):
-    return page("Upload leads", upload_form(key), key)
+    return page("Upload", card(upload_form(key), "New upload"), key)
 
 
 @app.post("/upload", response_class=HTMLResponse)
 async def upload_post(
+    request: Request,
     key: str = Depends(require_key),
-    csv: UploadFile = File(...),
+    upload: UploadFile = File(...),
     source: str = Form(...),
     phone_column: Optional[str] = Form(""),
+    country: Optional[str] = Form(""),
+    timezone: Optional[str] = Form(""),
+    strict: Optional[str] = Form(None),
 ):
-    raw = await csv.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
+    """Parse and check the file, then show what would be loaded. Writes nothing."""
+    raw = await upload.read()
     source = (source or "").strip()
+    phone_column = (phone_column or "").strip()
+    country = (country or common.DEFAULT_COUNTRY).strip().upper()
+    strict_on = bool(strict)
+    zone = (timezone or "").strip()
+    if not zone:
+        zones = common.country_timezones(country)
+        zone = zones[0] if zones else ""
+
+    def back(message: str) -> HTMLResponse:
+        return page(
+            "Upload",
+            card(f"<p><b>{e(message)}</b></p>", "That file was not loaded")
+            + card(upload_form(key, country, timezone or "", strict_on, source,
+                               phone_column), "Try again"),
+            key,
+        )
+
     if not source:
-        return page("Upload leads", "<p><b>Source name is required.</b></p>" + upload_form(key), key)
-    rows = common.parse_csv(text)
-    result = db.add_leads(rows, source, (phone_column or "").strip())
-    body = (
-        f"<p>File <b>{e(csv.filename)}</b> &rarr; source <b>{e(source)}</b>: "
-        f"{e(len(rows))} rows parsed, <b>{e(result.get('added', 0))}</b> added, "
-        f"<b>{e(result.get('skipped_blocked', 0))}</b> skipped (do not even try).</p>"
-        f"<p><a href=\"{href('/', key)}\">Back to dashboard</a></p>"
-        "<h3>Upload another</h3>" + upload_form(key)
+        return back("A source name is required.")
+    try:
+        rows = common.parse_upload(upload.filename or "", raw)
+    except Exception as exc:
+        return back(f"That file could not be read: {exc}")
+    if not rows:
+        return back("That file has no rows in it.")
+    try:
+        results = common.validate_rows(
+            rows, country=country, strict=strict_on,
+            phone_column=phone_column, blocked=db.blocked_phones(),
+        )
+    except ValueError as exc:  # no phone column, naming the ones there are
+        return back(str(exc))
+
+    token = _stash({
+        "results": results, "source": source, "country": country,
+        "timezone": zone, "strict": strict_on, "filename": upload.filename or "",
+    })
+    return page("Check the upload", preview_body(results, token, key, source,
+                                                 country, zone, strict_on,
+                                                 upload.filename or ""), key)
+
+
+def preview_body(results: list[dict], token: str, key: str, source: str,
+                 country: str, zone: str, strict_on: bool, filename: str) -> str:
+    """What the file holds and what would happen, before anything is written."""
+    counts = common.count_statuses(results)
+    ready = counts.get("valid", 0)
+
+    summary = stats_row(
+        [(STATUS_LABELS.get(st, st), counts.get(st, 0))
+         for st in common.ROW_STATUSES if counts.get(st, 0)]
+        or [("Rows", len(results))]
     )
-    return page("Upload leads", body, key)
+    about = (
+        f"<p class='note'><b>{e(filename)}</b> &rarr; source <b>{e(source)}</b>, "
+        f"read as <b>{e(country)}</b>"
+        + (f", time zone <b>{e(zone)}</b>" if zone else "")
+        + (", only this country" if strict_on else "")
+        + f". {e(len(results))} rows in the file.</p>"
+    )
+
+    shown = results[:200]
+    extra_columns: list[str] = []
+    for r in shown:
+        for k in r["row"].keys():
+            if k not in extra_columns:
+                extra_columns.append(k)
+    extra_columns = extra_columns[:6]
+
+    rows_html = []
+    for r in shown:
+        status = r["status"]
+        cells = [
+            pill(STATUS_LABELS.get(status, status), STATUS_PILLS.get(status, "off")),
+            e(r["phone"] or r["raw"]),
+            e(r["region"]),
+            e((r["timezones"] or ("",))[0]),
+            f"<span class='muted'>{e(r['reason'])}</span>",
+        ]
+        cells += [f"<span class='muted'>{e(r['row'].get(c, ''))}</span>"
+                  for c in extra_columns]
+        rows_html.append(cells)
+    headers = ["Status", "Number", "Country", "Time zone", "Why"] + extra_columns
+    listing = table(headers, rows_html)
+    if len(results) > len(shown):
+        listing += (f"<p class='note'>Showing the first {e(len(shown))} of "
+                    f"{e(len(results))} rows.</p>")
+
+    if ready:
+        commit = (
+            f'<form method="post" action="{href("/upload/commit", key)}">'
+            f'{hidden_key(key)}<input type="hidden" name="token" value="{e(token)}">'
+            f'<button type="submit">Load {e(ready)} '
+            f'lead{"" if ready == 1 else "s"}</button> '
+            f'<a class="btn plain" style="background:var(--inset);color:var(--text)" '
+            f'href="{href("/upload", key)}">Start over</a></form>'
+        )
+    else:
+        commit = (
+            "<p><b>Nothing here can be loaded.</b> Every row was held back for a "
+            "reason above.</p>"
+            f'<p><a class="btn" href="{href("/upload", key)}">Try another file</a></p>'
+        )
+
+    return (card(summary + about, "What is in the file")
+            + card(commit, "Load it")
+            + card(listing, "Row by row"))
+
+
+@app.post("/upload/commit", response_class=HTMLResponse)
+async def upload_commit(key: str = Depends(require_key), token: str = Form(...)):
+    """Write the rows the preview showed as ready, and nothing else."""
+    pending = _unstash(token)
+    if pending is None:
+        return page(
+            "Upload",
+            card("<p><b>That check has expired.</b> Nothing was loaded. "
+                 "Upload the file again to see it fresh.</p>", "Expired")
+            + card(upload_form(key), "New upload"),
+            key,
+        )
+    result = db.add_validated_leads(
+        pending["results"], pending["source"],
+        country=pending["country"], timezone=pending["timezone"],
+    )
+    _PENDING.pop(token, None)
+    skipped = result.get("skipped") or {}
+    held = "".join(
+        f"<li>{e(count)} {e(STATUS_LABELS.get(st, st).lower())}</li>"
+        for st, count in skipped.items() if count
+    )
+    body = card(
+        f"<p><b>{e(result.get('added', 0))}</b> leads loaded into source "
+        f"<b>{e(pending['source'])}</b>, read as {e(pending['country'])}.</p>"
+        + (f"<p class='note'>Held back:</p><ul class='note'>{held}</ul>" if held else "")
+        + f'<p><a class="btn" href="{href("/", key)}">Home</a> '
+          f'<a class="btn" style="background:var(--inset);color:var(--text)" '
+          f'href="{href("/upload", key)}">Upload another</a></p>',
+        "Loaded",
+    )
+    return page("Upload", body, key)
 
 
 # ---------------------------------------------------------------------------
@@ -282,12 +760,14 @@ async def push(key: str = Depends(require_key), chat_id: str = Form(...)):
     except Exception as exc:  # Telegram refused the send: bad token, bot not in chat
         return page(
             "Push failed",
-            f"<p>Telegram did not accept the post: {e(str(exc))}</p>"
-            "<p>Check that the CRM bot is in that group and the token is right.</p>",
+            card(f"<p>Telegram did not accept the post: {e(str(exc))}</p>"
+                 "<p class='note'>Check that the CRM bot is in that group and the "
+                 "token is right.</p>", "Not posted"),
             key,
         )
     if not posted:
-        return page("Nothing to push", "<p>No new leads left in the queue.</p>", key)
+        return page("Nothing to push",
+                    card("<p>No new leads left in the queue.</p>"), key)
     return redirect("/", key)
 
 
@@ -301,18 +781,21 @@ def chats_page(key: str, message: str = "") -> HTMLResponse:
             f'<form class="inline" method="post" action="{href("/chats", key)}">'
             f'{hidden_key(key)}<input type="hidden" name="action" value="remove">'
             f'<input type="hidden" name="chat_id" value="{e(ch["chat_id"])}">'
-            '<button type="submit">Remove</button></form>'
+            '<button class="plain small" type="submit">Remove</button></form>'
         )
         rows.append([e(ch["chat_id"]), e(ch.get("title") or ""), remove_form])
     add_form = (
         f'<form method="post" action="{href("/chats", key)}">{hidden_key(key)}'
         '<input type="hidden" name="action" value="add">'
-        'Chat id: <input type="text" name="chat_id" required> '
-        'Title: <input type="text" name="title"> '
-        '<button type="submit">Add</button></form>'
+        '<div class="row">'
+        '<label class="field"><span>Chat id</span>'
+        '<input type="text" name="chat_id" required></label>'
+        '<label class="field"><span>Title</span>'
+        '<input type="text" name="title"></label>'
+        '<button type="submit">Add</button></div></form>'
     )
-    body = (message + "<h3>Allowed chats</h3>" + table(["Chat id", "Title", ""], rows)
-            + "<h3>Add a chat</h3>" + add_form)
+    body = (message + card(table(["Chat id", "Title", ""], rows), "Allowed chats")
+            + card(add_form, "Add a chat"))
     return page("Chats", body, key)
 
 
@@ -351,12 +834,12 @@ def flag_row(f: dict, key: str) -> list[str]:
     confirm = (
         f'<form class="inline" method="post" action="{href("/flags/confirm", key)}">'
         f'{hidden_key(key)}<input type="hidden" name="phone" value="{e(phone)}">'
-        '<button type="submit">Confirm</button></form>'
+        '<button class="small" type="submit">Confirm</button></form>'
     )
     unflag = (
         f'<form class="inline" method="post" action="{href("/flags/unflag", key)}">'
         f'{hidden_key(key)}<input type="hidden" name="phone" value="{e(phone)}">'
-        '<button type="submit">Unflag</button></form>'
+        '<button class="plain small" type="submit">Unflag</button></form>'
     )
     confirmed = bool(f.get("confirmed"))
     return [
@@ -375,10 +858,10 @@ async def flags_get(key: str = Depends(require_key)):
     confirmed = [f for f in flags if f.get("confirmed")]
     headers = ["Phone", "Flagged by", "When", "Status", ""]
     body = (
-        "<h3>Pending review</h3>" + table(headers, [flag_row(f, key) for f in pending])
-        + "<h3>Confirmed</h3>" + table(headers, [flag_row(f, key) for f in confirmed])
+        card(table(headers, [flag_row(f, key) for f in pending]), "Pending review")
+        + card(table(headers, [flag_row(f, key) for f in confirmed]), "Confirmed")
     )
-    return page("Do not even try", body, key)
+    return page("Flags", body, key)
 
 
 @app.post("/flags/confirm")
@@ -417,7 +900,7 @@ def attempt_row(a: dict, key: str, with_phone: bool = True) -> list[str]:
 async def attempts_get(key: str = Depends(require_key)):
     attempts = db.recent_attempts(limit=200)
     rows = [attempt_row(a, key) for a in attempts]
-    return page("Last 200 attempts", table(ATTEMPT_HEADERS, rows), key)
+    return page("Attempts", card(table(ATTEMPT_HEADERS, rows), "Last 200 attempts"), key)
 
 
 # ---------------------------------------------------------------------------
@@ -464,12 +947,13 @@ async def lead_get(phone: str, key: str = Depends(require_key)):
         ])
 
     body = (
-        f"<p>Normalised phone: <b>{e(norm)}</b></p>"
-        "<h3>Leads</h3>"
-        + table(["Lead", "Source", "Status", "Created", "Chat", "Data"], lead_rows)
-        + "<h3>Attempts</h3>"
-        + table(["Attempt", "Lead", "Caller", "Claimed", "Answered", "Ended",
-                 "Outcome", "Talk", "Notes"], attempt_rows)
+        card(f"<p>Lead key: <b>{e(norm)}</b></p>"
+             "<p class='note'>Leads are keyed on digits only, so every shape the "
+             "same number arrived in matches here.</p>", "This number")
+        + card(table(["Lead", "Source", "Status", "Created", "Chat", "Data"],
+                     lead_rows), "Leads")
+        + card(table(["Attempt", "Lead", "Caller", "Claimed", "Answered", "Ended",
+                      "Outcome", "Talk", "Notes"], attempt_rows), "Attempts")
     )
     return page(f"Phone {norm}", body, key)
 
