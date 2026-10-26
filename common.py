@@ -26,6 +26,21 @@ TURSO_DATABASE_URL = os.environ["TURSO_DATABASE_URL"]
 TURSO_AUTH_TOKEN = os.environ["TURSO_AUTH_TOKEN"]
 DASHBOARD_KEY = os.environ["DASHBOARD_KEY"]
 
+# Google Voice texts arrive through a mautrix-gvoice bridge on a Matrix
+# homeserver (deploy/gvoice). All optional: with no homeserver set, gvoice.py
+# does not start and the dashboard's Texts page says so.
+MATRIX_HOMESERVER = (os.environ.get("MATRIX_HOMESERVER") or "").strip().rstrip("/")
+MATRIX_USER = (os.environ.get("MATRIX_USER") or "crm").strip()
+MATRIX_PASSWORD = os.environ.get("MATRIX_PASSWORD") or ""
+# The bridge's ghost users look like @gvoice_<login>.+15551234567:<domain> and
+# the bridge bot is @gvoicebot:<domain>, from appservice.username_template and
+# appservice.bot.username in the bridge config.
+GVOICE_GHOST_PREFIX = (os.environ.get("GVOICE_GHOST_PREFIX") or "gvoice_").strip()
+GVOICE_BOT = (os.environ.get("GVOICE_BOT") or "gvoicebot").strip().lstrip("@")
+GVOICE_SOURCE = (os.environ.get("GVOICE_SOURCE") or "google-voice").strip() or "google-voice"
+# Post every inbound text to the allowed group chats so callers see replies.
+GVOICE_ANNOUNCE = (os.environ.get("GVOICE_ANNOUNCE") or "1").strip().lower() not in ("0", "no", "false", "")
+
 OUTCOMES = {  # callback key -> button label
     "no_response": "No R",
     "hung_up": "Hung up",

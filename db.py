@@ -67,7 +67,30 @@ _SCHEMA = [
          flagged_by_name TEXT,
          flagged_at      TEXT DEFAULT CURRENT_TIMESTAMP,
          confirmed       INTEGER NOT NULL DEFAULT 0)""",
+    # Google Voice texts, bridged through Matrix by gvoice.py. A text is keyed
+    # on the same digits-only phone as leads, so it lands on the lead page.
+    """CREATE TABLE IF NOT EXISTS texts (
+         id        INTEGER PRIMARY KEY AUTOINCREMENT,
+         event_id  TEXT UNIQUE,
+         room_id   TEXT NOT NULL,
+         phone     TEXT NOT NULL,
+         direction TEXT NOT NULL,
+         sender    TEXT DEFAULT '',
+         body      TEXT DEFAULT '',
+         msgtype   TEXT DEFAULT 'm.text',
+         lead_id   INTEGER,
+         sent_at   TEXT DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS text_rooms (
+         room_id    TEXT PRIMARY KEY,
+         phone      TEXT NOT NULL,
+         name       TEXT DEFAULT '',
+         updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS settings (
+         key   TEXT PRIMARY KEY,
+         value TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status, id)",
+    "CREATE INDEX IF NOT EXISTS idx_texts_phone ON texts (phone, id)",
+    "CREATE INDEX IF NOT EXISTS idx_text_rooms_phone ON text_rooms (phone)",
     "CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads (phone)",
     "CREATE INDEX IF NOT EXISTS idx_attempts_phone ON attempts (phone)",
     "CREATE INDEX IF NOT EXISTS idx_attempts_caller ON attempts (caller_id, ended_at)",
@@ -580,6 +603,153 @@ def list_flags(pending_only: bool = False) -> list[dict]:
         sql += "WHERE confirmed=0 "
     sql += "ORDER BY confirmed ASC, flagged_at DESC, phone"
     return _rows(_q(sql))
+
+
+# --- settings (small values the processes share, such as a Matrix sync token) ----
+
+
+def setting_get(key: str, default: str | None = None) -> str | None:
+    row = _one(_q("SELECT value FROM settings WHERE key=?", (key,)))
+    return default if row is None or row["value"] is None else str(row["value"])
+
+
+def setting_set(key: str, value: str | None) -> None:
+    _q("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+
+
+# --- texts (Google Voice, through the Matrix bridge) ----------------------------
+
+TEXT_DIRECTIONS = ("in", "out", "bridge")
+
+
+def map_text_room(room_id: str, phone: str, name: str = "") -> None:
+    """Remember which Matrix room carries the conversation with this number."""
+    phone = normalize_phone(phone)
+    if not room_id or not phone:
+        return
+    existing = _one(_q("SELECT name FROM text_rooms WHERE room_id=?", (room_id,)))
+    if existing is not None and not name:
+        name = existing.get("name") or ""
+    _q(
+        "INSERT OR REPLACE INTO text_rooms (room_id, phone, name, updated_at) "
+        "VALUES (?, ?, ?, ?)",
+        (room_id, phone, name or "", _now()),
+    )
+
+
+def phone_for_room(room_id: str) -> str:
+    row = _one(_q("SELECT phone FROM text_rooms WHERE room_id=?", (room_id,)))
+    return str(row["phone"]) if row else ""
+
+
+def room_for_phone(phone: str) -> str:
+    """The most recently used room for this number, or '' when they never texted."""
+    row = _one(
+        _q(
+            "SELECT room_id FROM text_rooms WHERE phone=? ORDER BY updated_at DESC, room_id LIMIT 1",
+            (normalize_phone(phone),),
+        )
+    )
+    return str(row["room_id"]) if row else ""
+
+
+def text_room_name(room_id: str) -> str:
+    row = _one(_q("SELECT name FROM text_rooms WHERE room_id=?", (room_id,)))
+    return str(row["name"] or "") if row else ""
+
+
+def record_text(
+    event_id: str,
+    room_id: str,
+    phone: str,
+    direction: str,
+    sender: str = "",
+    body: str = "",
+    msgtype: str = "m.text",
+    sent_at: str | None = None,
+    lead_id: int | None = None,
+) -> bool:
+    """Store one text. False when that Matrix event was stored before.
+
+    The event ID is unique, so replaying a /sync page (after a restart, or on
+    the first sync which carries recent history) never doubles a text.
+    """
+    if direction not in TEXT_DIRECTIONS:
+        raise ValueError(f"Unknown direction '{direction}'. Use one of {', '.join(TEXT_DIRECTIONS)}")
+    phone = normalize_phone(phone)
+    if not event_id or not room_id or not phone:
+        return False
+    rs = _q(
+        "INSERT OR IGNORE INTO texts "
+        "(event_id, room_id, phone, direction, sender, body, msgtype, lead_id, sent_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (event_id, room_id, phone, direction, sender or "", body or "", msgtype or "m.text",
+         lead_id, sent_at or _now()),
+    )
+    return rs.rows_affected == 1
+
+
+def texts_for_phone(phone: str) -> list[dict]:
+    """Every text with this number, oldest first, the way a thread reads."""
+    rs = _q(
+        "SELECT * FROM texts WHERE phone=? ORDER BY sent_at, id",
+        (normalize_phone(phone),),
+    )
+    return _rows(rs)
+
+
+def recent_texts(limit: int = 200) -> list[dict]:
+    """Newest texts with the lead's source attached (for the dashboard)."""
+    rs = _q(
+        "SELECT t.*, s.name AS source FROM texts t "
+        "LEFT JOIN leads l ON l.id = t.lead_id "
+        "LEFT JOIN sources s ON s.id = l.source_id "
+        "ORDER BY t.id DESC LIMIT ?",
+        (limit,),
+    )
+    return _rows(rs)
+
+
+def phones_awaiting_reply() -> int:
+    """How many numbers texted in and have not been written back to since."""
+    rs = _q(
+        "SELECT COUNT(DISTINCT phone) AS n FROM texts t WHERE direction='in' "
+        "AND NOT EXISTS (SELECT 1 FROM texts o WHERE o.phone = t.phone "
+        "AND o.direction='out' AND o.id > t.id)"
+    )
+    row = _one(rs)
+    return int(row["n"]) if row else 0
+
+
+def latest_lead_for_phone(phone: str) -> dict | None:
+    rs = _q(
+        _LEAD_SELECT + "WHERE leads.phone=? ORDER BY leads.id DESC LIMIT 1",
+        (normalize_phone(phone),),
+    )
+    return _lead(_one(rs))
+
+
+def add_text_lead(phone_e164: str, name: str = "", first_text: str = "",
+                  source_name: str = "google-voice") -> int | None:
+    """A number that texted in and was never uploaded becomes a new lead.
+
+    None when the number is on the do-not-even-try list; the text itself is
+    still recorded by the caller, the number just does not re-enter the queue.
+    """
+    key = normalize_phone(phone_e164)
+    if not key or key in blocked_phones():
+        return None
+    data = {"Phone": phone_e164}
+    if name and normalize_phone(name) != key:
+        data["Name"] = name
+    if first_text:
+        data["First text"] = " ".join(str(first_text).split())[:200]
+    source_id = get_or_create_source(source_name)
+    rs = _q(
+        "INSERT INTO leads (phone, data, source_id, status) VALUES (?, ?, ?, 'new')",
+        (key, json.dumps(data, ensure_ascii=False), source_id),
+    )
+    return int(rs.last_insert_rowid) if rs.rows_affected == 1 else None
 
 
 # --- analytics ------------------------------------------------------------------

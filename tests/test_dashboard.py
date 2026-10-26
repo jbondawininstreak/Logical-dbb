@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from conftest import DASHBOARD_KEY as KEY
 
-PAGES = ("/", "/upload", "/chats", "/flags", "/attempts", "/sources")
+PAGES = ("/", "/upload", "/chats", "/flags", "/attempts", "/sources", "/texts")
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ class TestTheLook:
 
     def test_the_home_screen_is_a_grid_of_app_icons(self, home):
         assert 'class="grid"' in home
-        assert home.count('class="tile"') == 5
+        assert home.count('class="tile"') == 6
 
     def test_it_follows_the_system_appearance(self, home):
         assert "prefers-color-scheme: dark" in home

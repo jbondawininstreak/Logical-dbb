@@ -1,0 +1,27 @@
+# Synapse (a Matrix homeserver) and the mautrix-gvoice bridge, side by side with
+# the crm service on the same server. deploy/gvoice/setup-gvoice.sh writes the
+# .env next to this file (MATRIX_DOMAIN) and the config files these mount, so
+# run that rather than `docker compose up` by hand the first time.
+services:
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: synapse
+    restart: unless-stopped
+    environment:
+      SYNAPSE_SERVER_NAME: ${MATRIX_DOMAIN}
+      SYNAPSE_REPORT_STATS: "no"
+    volumes:
+      - ./synapse:/data
+    # Loopback only. Caddy is the way in, and a port published on all
+    # interfaces would step around ufw.
+    ports:
+      - "127.0.0.1:8008:8008"
+
+  mautrix-gvoice:
+    image: dock.mau.dev/mautrix/gvoice:latest
+    container_name: mautrix-gvoice
+    restart: unless-stopped
+    volumes:
+      - ./bridge:/data
+    depends_on:
+      - synapse

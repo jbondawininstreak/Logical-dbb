@@ -56,7 +56,10 @@ chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 echo "==> Configuring Caddy for $DOMAIN"
 install -m 644 deploy/Caddyfile /etc/caddy/Caddyfile
-mkdir -p /etc/caddy
+mkdir -p /etc/caddy /etc/caddy/conf.d
+# The Caddyfile imports /etc/caddy/conf.d/*.caddy; keep one file there so the
+# import always has something to match.
+[[ -n "$(ls -A /etc/caddy/conf.d 2>/dev/null)" ]] || echo "# extra sites go here, one file each" > /etc/caddy/conf.d/00-empty.caddy
 echo "CRM_DOMAIN=$DOMAIN" > /etc/caddy/environment
 mkdir -p /etc/systemd/system/caddy.service.d
 cat > /etc/systemd/system/caddy.service.d/environment.conf <<'UNIT'

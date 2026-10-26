@@ -1,13 +1,12 @@
 from multiprocessing import Process
-import admin_bot, crm_bot, dashboard
+import admin_bot, crm_bot, dashboard, gvoice
 
 if __name__ == "__main__":
-    a = Process(target=admin_bot.main)
-    c = Process(target=crm_bot.main)
-    d = Process(target=dashboard.main)
-    a.start()
-    c.start()
-    d.start()
-    a.join()
-    c.join()
-    d.join()
+    targets = [admin_bot.main, crm_bot.main, dashboard.main]
+    if gvoice.configured():
+        targets.append(gvoice.main)
+    procs = [Process(target=t) for t in targets]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
