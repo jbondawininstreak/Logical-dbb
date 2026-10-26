@@ -1,13 +1,13 @@
 # Telegram CRM v2
 
-Two Telegram bots and a web dashboard, sharing one database hosted on Turso (a free, hosted SQLite). The **CRM bot** sits in your callers' group chat and posts one lead at a time: callers tap *I'm calling it* to take it, *Answered* when a human picks up, then how the call went. A call that runs over 5 minutes asks the caller to type a few words of notes, and any caller can tap *Do not even try* to hide a number for good. Every lead carries a *source* (the name you give a CSV when you upload it), and a number that has been called before shows its past attempts right on the lead card. The **dashboard** is where you run things: upload leads, push them to the group, manage allowed chats, review flagged numbers, and see outcomes per source and per caller. The **admin bot** from v1 still runs as a fallback for the same jobs over Telegram. Leads are posted as plain text, and the CRM bot must be added to the group before it can post anything.
+Two Telegram bots and a web dashboard, sharing one database hosted on Turso (a free, hosted SQLite). The **CRM bot** sits in your callers' group chat and posts one lead at a time: callers tap *I'm calling it* to take it, *Answered* when a human picks up, then how the call went. A call that runs over 5 minutes asks the caller to type a few words of notes, and any caller can tap *Do not even try* to hide a number for good. Every lead carries a *source* (the name you give a CSV when you upload it), and a number that has been called before shows its past attempts right on the lead card. The **dashboard** is where you run things: upload leads, push them to the group, manage allowed chats, review flagged numbers, and see outcomes per source and per caller. The **admin bot** from v1 still runs as a fallback for the same jobs over Telegram. Leads are posted as plain text, and the CRM bot must be added to the group before it can post anything. Texts to your Google Voice number land in the CRM too, through a small Matrix server and the mautrix-gvoice bridge you can host on the same server: they show on the dashboard and on the lead's page, and a number that texts in and was never uploaded becomes a lead under the source `google-voice`.
 
 ## Setup
 
 1. **Make two bots.** In Telegram, open **@BotFather** and send `/newbot`. Follow the prompts and copy the token it gives you. Do it a second time for the second bot. Name them something like `MyAdminBot` and `MyCRMBot`. Keep both tokens.
 2. **Get your user ID.** Open **@userinfobot** in Telegram and send it anything. It replies with your ID, a number.
 3. **Make a Turso database.** Go to turso.tech, sign up (free, no card), click *Create database*, name it `crm`. On the database page copy the **URL** (shown as `libsql://...`) and click *Generate token*; copy that too. Paste the URL as-is; the app swaps the `libsql://` scheme for `https://`, which is the transport Turso actually accepts.
-4. **Fill in `.env`.** Copy `.env.example` to `.env`: `ADMIN_BOT_TOKEN`, `CRM_BOT_TOKEN`, `ADMIN_USER_ID`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DASHBOARD_KEY` (any long random word you make up). `DEFAULT_COUNTRY` is optional: the two-letter country the upload form starts on and the one the admin bot uses, `GB` when it is not set.
+4. **Fill in `.env`.** Copy `.env.example` to `.env`: `ADMIN_BOT_TOKEN`, `CRM_BOT_TOKEN`, `ADMIN_USER_ID`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DASHBOARD_KEY` (any long random word you make up). `DEFAULT_COUNTRY` is optional: the two-letter country the upload form starts on and the one the admin bot uses, `GB` when it is not set. The `MATRIX_*` values are optional too: the Google Voice setup script fills them in on a server (see *Google Voice texts* below), and they can stay empty.
 5. **Run it.** `pip install -r requirements.txt` then `python run.py`. Open `http://localhost:8000/?key=<your DASHBOARD_KEY>` in a browser.
 6. **Connect the group.** Add the CRM bot to the callers' group; it posts the chat ID. On the dashboard's *Chats* page, add that ID.
 7. **Upload leads.** Dashboard *Upload*: pick the file, type a source name (for example `list-oct-18`), choose the country its local-looking numbers should be read as, and submit. You get a row-by-row check first and nothing is saved until you press *Load*. Then click *Push*.
@@ -35,6 +35,30 @@ Useful afterwards:
 
 Keep it private. The key is in every dashboard link, so do not share links or screenshots of the address bar. cloaked.gg's firewall sits in front, and the dashboard itself only listens on the server's own loopback address, so the only way in is through Caddy on your domain. If cloaked.gg publishes the IP ranges its proxy uses, you can tighten things further by letting ports 80 and 443 through `ufw` only from those ranges, so nobody can reach the server by its bare IP.
 
+## Google Voice texts
+
+Texts sent to your Google Voice number can land in the CRM as well. A small Matrix server (Synapse) and the mautrix-gvoice bridge run next to the CRM in Docker; the CRM follows the bridge as an ordinary Matrix user and records every text. An inbound text shows on the dashboard's *Texts* page and on the lead's page, is posted to the allowed group chats so callers see it (`GVOICE_ANNOUNCE=1`, the default; set it to `0` to keep texts on the dashboard only), and a number that texts in and was never uploaded becomes a new lead under the source `google-voice`. You can reply from the lead's page.
+
+1. **Run the Google Voice setup script.** On the same server, after `setup.sh`, as root and with your own domain name:
+   ```
+   bash /opt/crm/deploy/gvoice/setup-gvoice.sh matrix.yourdomain.com
+   ```
+   It installs Docker, runs Synapse and the bridge from `deploy/gvoice/docker-compose.yml` in `/opt/gvoice`, creates the Matrix user `crm`, writes `MATRIX_HOMESERVER`, `MATRIX_USER` and `MATRIX_PASSWORD` into `/opt/crm/.env`, adds the domain to Caddy, and restarts `crm`. It prints the password at the end.
+2. **Point the domain at it.** In cloaked.gg, add an **A record** for `matrix` (or whatever name you chose) with the server's IP, the same way as the dashboard's.
+3. **Sign in to Element.** Open app.element.io, choose *Edit* next to the homeserver, enter `https://matrix.yourdomain.com`, and sign in as `crm` with the password the script printed (it is also in `/opt/crm/.env`).
+4. **Log the bridge in to Google Voice.** Start a chat with `@gvoicebot:matrix.yourdomain.com` and send `login`. Then sign in at voice.google.com in a private browser window and paste the cookies the bot asks for: a JSON object with `SID`, `HSID`, `SSID`, `OSID`, `APISID` and `SAPISID` (sometimes `__Secure-1PSIDTS` too), or a request copied *as cURL* from the browser's network tab. The bot confirms and brings in your recent conversations.
+5. **Watch them arrive.** Texts appear on the dashboard within seconds.
+
+One thing to know before you rely on replies. The bridge's Docker image receives texts for any Google account, but the upstream bridge needs Electron to send from a personal (non-Workspace) Google account, and the Docker image does not carry it. With a personal account, a reply typed on the lead page may come back as a bridge error on the thread. Sending works with a Google Workspace account, or by running the bridge outside Docker with Electron installed (see docs.mau.fi/bridges/go/gvoice). Receiving, lead creation and the group-chat posts work either way.
+
+Useful afterwards:
+
+- Bridge and Synapse logs: `docker compose -f /opt/gvoice/docker-compose.yml logs -f`
+- The CRM's own intake logs are in `journalctl -u crm -f`, with the bots and the dashboard.
+- Update the bridge and Synapse: `cd /opt/gvoice && docker compose pull && docker compose up -d`
+
+Running on a laptop instead: set `MATRIX_HOMESERVER`, `MATRIX_USER` and `MATRIX_PASSWORD` in `.env` to any Matrix server the bridge is registered on. Leave `MATRIX_HOMESERVER` empty and nothing about texts runs.
+
 ## Tests
 
 ```
@@ -45,7 +69,9 @@ python -m pytest tests
 They run against a throwaway SQLite file, never a hosted database: `tests/conftest.py`
 sets `TURSO_DATABASE_URL` before anything imports `db`, and refuses to run if it is
 not a `file:` URL. The sample files in every supported format are built during the
-run rather than committed.
+run rather than committed. `tests/test_texts.py` feeds hand-written `/sync` pages to
+the Google Voice intake and checks what reaches the database and the pages; no
+homeserver is involved.
 
 What they are there to hold still:
 
@@ -58,6 +84,8 @@ What they are there to hold still:
 - A preview writes nothing, and the button that turns it into leads cannot be
   pressed twice.
 - A dashboard link never loses its key.
+- A text from a number that was never uploaded makes one lead, and replaying the
+  same `/sync` page stores nothing twice.
 
 ## Dashboard pages
 
@@ -71,7 +99,8 @@ Every page needs `?key=<your DASHBOARD_KEY>` on the end of the address, or it an
 | `/chats` | The allowed group chats; add one by ID and title, or remove one. |
 | `/flags` | Numbers callers marked *Do not even try*, pending first; *Confirm* keeps the block, *Unflag* puts the leads back in the queue. |
 | `/attempts` | The last 200 call attempts, newest first: date, caller, phone, source, outcome, talk time, notes. |
-| `/lead/<phone>` | Everything known about one phone number: every lead row and every attempt. |
+| `/texts` | Whether Google Voice is connected and what the bridge last said, then the last 200 texts in and out, each linked to its number. |
+| `/lead/<phone>` | Everything known about one phone number: every lead row, every attempt, and the text thread with a reply box once Google Voice has a conversation with that number. |
 
 ## Caller buttons and commands
 
@@ -141,7 +170,15 @@ Where the brief left something open, we picked the simplest option. The choices 
 - The notes prompt mentions the caller by `@username` when they have one, otherwise by their full name. Any non-command text the caller then sends in the group is taken as the notes, not only a Telegram reply to the prompt.
 - A tap on a card that is already closed answers `Already closed`; a claim on a blocked number answers `This number is blocked`.
 - Dashboard answer rate and average talk show `-` when there are no attempts; a non-numeric chat ID on Push or Chats returns a 400 or an inline error.
-- The hosted-database client is re-created after `run.py` forks its three processes and closed on exit, because the libsql client's background thread otherwise stops a process from exiting.
+- The hosted-database client is re-created after `run.py` forks its processes and closed on exit, because the libsql client's background thread otherwise stops a process from exiting.
 - The dashboard listens on `127.0.0.1:8000` unless `DASHBOARD_HOST` or `DASHBOARD_PORT` says otherwise, so on a server it is reachable only through Caddy.
 - Caddy is the web server in front of the dashboard because it obtains and renews the HTTPS certificate on its own with no extra steps.
-- The systemd service runs the two bots and the dashboard together as one unit, because `run.py` already starts all three; a crash restarts all of them after five seconds.
+- The systemd service runs the two bots, the dashboard and (when it is configured) the Google Voice intake together as one unit, because `run.py` already starts all of them; a crash restarts all of them after five seconds.
+- Texts are keyed on digits only, exactly like leads, so a text from `+1 555 123 4567` lands on the same lead page as an upload of `15551234567`.
+- A text from a number on the do-not-even-try list is still recorded, but it makes no lead and the number stays out of the queue.
+- The first sync after setup records the recent history the bridge brings in, but does not post it to the group; only texts that arrive afterwards are posted.
+- A lead made from a text holds `Phone`, `Name` (the contact name the bridge knows, when it is more than the number) and `First text` in its data, and is pushed like any other lead. The lead card's `Seen before:` is unchanged.
+- The Matrix access token and sync token live in the `settings` table, so a restart carries on where it left off rather than re-reading history.
+- The bridge and Synapse use SQLite rather than Postgres, so the smallest server is enough.
+- Synapse is published on `127.0.0.1:8008` only and reached through Caddy on the Matrix domain; Docker's own port forwarding would otherwise step around `ufw`.
+- The reply box on a lead's page only appears once the bridge has a conversation with that number, because the bridge creates the room and the CRM only writes into it.

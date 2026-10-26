@@ -3,3 +3,7 @@
 {$CRM_DOMAIN} {
     reverse_proxy 127.0.0.1:8000
 }
+
+# Extra sites, one file each. deploy/gvoice/setup-gvoice.sh adds the Matrix
+# server here.
+import /etc/caddy/conf.d/*.caddy

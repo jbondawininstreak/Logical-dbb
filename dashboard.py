@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 import common
 import db
+import gvoice
 
 app = FastAPI(title="CRM dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -215,6 +216,7 @@ _GLYPHS = {
     "chats": "<path d='M4 7h16v10H11l-5 4v-4H4z'/>",
     "sources": "<ellipse cx='14' cy='7' rx='9' ry='3.5'/><path d='M5 7v6c0 1.9 4 3.5 9 3.5s9-1.6 9-3.5V7'/>"
                "<path d='M5 13v6c0 1.9 4 3.5 9 3.5s9-1.6 9-3.5v-6'/>",
+    "texts": "<path d='M4 6h20v12H12l-5 4v-4H4z'/><path d='M9 10h10M9 14h6'/>",
 }
 
 TILES = [
@@ -223,6 +225,7 @@ TILES = [
     ("/flags", "Flags", "flags", "#ff3b30", "#c9271e"),
     ("/chats", "Chats", "chats", "#5e5ce6", "#3f3dc4"),
     ("/sources", "Sources", "sources", "#ff9f0a", "#d97d00"),
+    ("/texts", "Texts", "texts", "#30b0c7", "#1a8aa0"),
 ]
 
 PAGES = [(p, label) for p, label, _g, _a, _b in TILES]
@@ -364,10 +367,14 @@ def redirect(path: str, key: str) -> RedirectResponse:
 async def home(key: str = Depends(require_key)):
     counts = db.stats()
     chats = db.list_chats()
-    # A red badge is "something is waiting for you", so only flags pending review
-    # get one. Chat and source counts are facts, not alerts, and belong in the
-    # cards below rather than on a tile.
-    badges = {"/flags": len([f for f in db.list_flags() if not f.get("confirmed")])}
+    # A red badge is "something is waiting for you": flags pending review, and
+    # numbers that texted in and have not been written back to. Chat and source
+    # counts are facts, not alerts, and belong in the cards below rather than
+    # on a tile.
+    badges = {
+        "/flags": len([f for f in db.list_flags() if not f.get("confirmed")]),
+        "/texts": db.phones_awaiting_reply(),
+    }
     tiles = "".join(
         tile(path, label, name, c1, c2, key, badges.get(path, 0))
         for path, label, name, c1, c2 in TILES
@@ -901,6 +908,90 @@ async def attempts_get(key: str = Depends(require_key)):
 
 
 # ---------------------------------------------------------------------------
+# texts (Google Voice through the Matrix bridge)
+
+TEXT_HEADERS = ["When", "Way", "Phone", "Lead", "Source", "Text"]
+
+
+def way_pill(direction) -> str:
+    """Which way a text went: in from the number, out from us, or a bridge notice."""
+    direction = str(direction or "")
+    if direction == "in":
+        return pill("in", "ok")
+    if direction == "out":
+        return pill("out", "off")
+    if direction == "bridge":
+        return pill("bridge", "warn")
+    return pill(direction, "off")
+
+
+def text_row(t: dict, key: str, with_phone: bool = True) -> list[str]:
+    row = [e(t.get("sent_at")), way_pill(t.get("direction"))]
+    if with_phone:
+        row.append(phone_link(t.get("phone"), key))
+    row += [
+        e(t.get("lead_id") or ""),
+        e(t.get("source") or ""),
+        e(t.get("body")),
+    ]
+    return row
+
+
+def texts_status() -> str:
+    """Whether texts can arrive at all, and what the intake last saw."""
+    if not gvoice.configured():
+        return (
+            "<p class='note'>Google Voice is not set up. On the server, run "
+            "deploy/gvoice/setup-gvoice.sh to add the Matrix homeserver and the "
+            "bridge; it fills in MATRIX_HOMESERVER, MATRIX_USER and "
+            "MATRIX_PASSWORD in .env.</p>"
+        )
+    lines = [
+        f"<p>Homeserver: <b>{e(common.MATRIX_HOMESERVER)}</b></p>",
+        f"<p>Last sync: <b>{e(db.setting_get(gvoice.KEY_LAST_SYNC) or 'never')}</b></p>",
+    ]
+    last_error = db.setting_get(gvoice.KEY_LAST_ERROR)
+    if last_error:
+        lines.append(f"<p>Last error: {e(last_error)}</p>")
+    last_notice = db.setting_get(gvoice.KEY_LAST_NOTICE)
+    if last_notice:
+        lines.append(f"<p>The bridge last said: {e(last_notice)}</p>")
+    return "".join(lines)
+
+
+@app.get("/texts", response_class=HTMLResponse)
+async def texts_get(key: str = Depends(require_key)):
+    rows = [text_row(t, key) for t in db.recent_texts(limit=200)]
+    body = (
+        card(texts_status(), "Google Voice")
+        + card(table(TEXT_HEADERS, rows), "Last 200 texts")
+    )
+    return page("Texts", body, key)
+
+
+@app.post("/texts/send")
+async def texts_send(
+    key: str = Depends(require_key),
+    phone: str = Form(...),
+    body: str = Form(...),
+):
+    norm = db.normalize_phone(phone) or phone
+    lead_path = "/lead/" + quote(norm, safe="")
+    try:
+        gvoice.send_text(norm, body)
+    except (gvoice.MatrixError, ValueError) as exc:
+        return page(
+            "Not sent",
+            card(
+                f"<p>{e(exc)}</p>"
+                f"<p><a href=\"{href(lead_path, key)}\">Back to the lead</a></p>"
+            ),
+            key,
+        )
+    return redirect(lead_path, key)
+
+
+# ---------------------------------------------------------------------------
 # lead history
 
 @app.get("/lead/{phone}", response_class=HTMLResponse)
@@ -943,6 +1034,29 @@ async def lead_get(phone: str, key: str = Depends(require_key)):
             e(a.get("notes")),
         ])
 
+    # The text thread reads oldest first, the way a conversation does, and the
+    # reply box only appears once the bridge has a room for this number.
+    text_rows = [
+        [e(t.get("sent_at")), way_pill(t.get("direction")), e(t.get("body"))]
+        for t in db.texts_for_phone(norm)
+    ]
+    if not gvoice.configured():
+        reply = "<p class='note'>Google Voice is not set up.</p>"
+    elif db.room_for_phone(norm):
+        reply = (
+            f'<form method="post" action="{href("/texts/send", key)}">{hidden_key(key)}'
+            f'<input type="hidden" name="phone" value="{e(norm)}">'
+            '<div class="row"><label class="field"><span>Reply by text</span>'
+            '<input name="body" required maxlength="1600" placeholder="Type a text">'
+            '</label><button type="submit">Send</button></div></form>'
+        )
+    else:
+        reply = (
+            "<p class='note'>No conversation with this number yet. One appears "
+            "when they text the Google Voice number, or when you start a chat "
+            "with them from Element.</p>"
+        )
+
     body = (
         card(f"<p>Lead key: <b>{e(norm)}</b></p>"
              "<p class='note'>Leads are keyed on digits only, so every shape the "
@@ -951,6 +1065,7 @@ async def lead_get(phone: str, key: str = Depends(require_key)):
                      lead_rows), "Leads")
         + card(table(["Attempt", "Lead", "Caller", "Claimed", "Answered", "Ended",
                       "Outcome", "Talk", "Notes"], attempt_rows), "Attempts")
+        + card(table(["When", "Way", "Text"], text_rows) + reply, "Texts")
     )
     return page(f"Phone {norm}", body, key)
 

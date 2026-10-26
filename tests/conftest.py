@@ -102,6 +102,7 @@ def clean_db():
     import db
 
     db.init_db()
-    for table in ("attempts", "leads", "do_not_even_try", "sources", "allowed_chats"):
+    for table in ("attempts", "texts", "text_rooms", "settings", "leads",
+                  "do_not_even_try", "sources", "allowed_chats"):
         db._q(f"DELETE FROM {table}")
     return db
